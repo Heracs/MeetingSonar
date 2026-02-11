@@ -6382,6 +6382,9 @@
     "删除" : {
 
     },
+    "加载配置中..." : {
+
+    },
     "取消" : {
       "extractionState" : "manual",
       "localizations" : {

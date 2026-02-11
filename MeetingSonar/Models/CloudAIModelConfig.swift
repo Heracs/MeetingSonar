@@ -120,6 +120,7 @@ struct LLMModelSettings: Codable, Hashable, Sendable {
     var modelName: String
 
     /// 质量预设（UI 概念）/ Quality preset (UI concept)
+    /// v1.1.0: 使用自定义解码提供默认值，支持从旧配置迁移
     var qualityPreset: LLMQualityPreset
 
     /// 可选参数：仅在用户明确配置时设置 / Optional parameters: Only set when explicitly configured
@@ -136,6 +137,44 @@ struct LLMModelSettings: Codable, Hashable, Sendable {
     /// 流式输出开关（可选，默认使用全局设置）
     /// Streaming output toggle (optional, defaults to global setting)
     var enableStreaming: Bool?
+
+    /// 自定义解码器 - 支持从旧配置迁移（qualityPreset 可能不存在）
+    /// Custom decoder - supports migration from old configs (qualityPreset may not exist)
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        modelName = try container.decode(String.self, forKey: .modelName)
+
+        // 如果 qualityPreset 不存在，使用默认值 .balanced
+        // If qualityPreset doesn't exist, use default value .balanced
+        qualityPreset = try container.decodeIfPresent(LLMQualityPreset.self, forKey: .qualityPreset) ?? .balanced
+
+        temperature = try container.decodeIfPresent(Double.self, forKey: .temperature)
+        maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens)
+        topP = try container.decodeIfPresent(Double.self, forKey: .topP)
+        enableStreaming = try container.decodeIfPresent(Bool.self, forKey: .enableStreaming)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelName, qualityPreset, temperature, maxTokens, topP, enableStreaming
+    }
+
+    /// 标准初始化方法 / Standard initializer
+    init(
+        modelName: String,
+        qualityPreset: LLMQualityPreset,
+        temperature: Double? = nil,
+        maxTokens: Int? = nil,
+        topP: Double? = nil,
+        enableStreaming: Bool? = nil
+    ) {
+        self.modelName = modelName
+        self.qualityPreset = qualityPreset
+        self.temperature = temperature
+        self.maxTokens = maxTokens
+        self.topP = topP
+        self.enableStreaming = enableStreaming
+    }
 
     /// 获取用于 API 请求的参数（仅返回已配置的参数）
     /// Get parameters for API request (only returns configured parameters)

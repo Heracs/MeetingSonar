@@ -84,6 +84,21 @@ final class StreamingSummaryViewModel: ObservableObject {
                 let modelName = config.llmConfig?.modelName ?? provider.provider.defaultLLMModel
                 let settings = config.llmConfig
 
+                // Log detailed API request parameters for debugging
+                logger.debug("""
+                [StreamingSummary] API Request Parameters:
+                ├─ Provider: \(provider.provider.displayName) (\(provider.provider.rawValue))
+                ├─ Base URL: \(provider.baseURL)
+                ├─ Model: \(modelName)
+                ├─ Temperature: \(settings?.temperature.map { String($0) } ?? "not set (use provider default)")
+                ├─ Max Tokens: \(settings?.maxTokens.map { String($0) } ?? "not set (use provider default)")
+                ├─ Quality Preset: \(settings?.qualityPreset.rawValue ?? "none")
+                ├─ Messages Count: \(messages.count)
+                ├─ System Message Length: \(messages.first?.content.count ?? 0) chars
+                ├─ User Message Length: \(messages.last?.content.count ?? 0) chars
+                └─ Transcript Length: \(transcript.count) chars
+                """)
+
                 state = .streaming(progress: 0.0)
 
                 // Start streaming
@@ -219,12 +234,9 @@ final class StreamingSummaryViewModel: ObservableObject {
                 sourceTranscriptVersionNumber: sourceTranscript?.versionNumber ?? 1
             )
 
-            // Update metadata directly
-            if let index = MetadataManager.shared.recordings.firstIndex(where: { $0.id == meetingID }) {
-                MetadataManager.shared.recordings[index].summaryVersions.append(version)
-                await MetadataManager.shared.save()
-                logger.info("Summary saved: \(fullPath.path)")
-            }
+            // Use MetadataManager's safe method to add summary version
+            await MetadataManager.shared.addSummaryVersion(version, to: meetingID)
+            logger.info("Summary saved: \(fullPath.path)")
 
         } catch {
             logger.error("Failed to save summary: \(error.localizedDescription)")

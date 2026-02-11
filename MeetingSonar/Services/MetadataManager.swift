@@ -235,6 +235,30 @@ final class MetadataManager: ObservableObject, MetadataManagerProtocol {
         }
     }
 
+    /// Add a summary version to a specific meeting
+    /// - Parameters:
+    ///   - version: The summary version to add
+    ///   - meetingID: The meeting ID
+    func addSummaryVersion(_ version: SummaryVersion, to meetingID: UUID) async {
+        guard let index = recordings.firstIndex(where: { $0.id == meetingID }) else {
+            LoggerService.shared.log(
+                category: .general,
+                level: .warning,
+                message: "[MetadataManager] Cannot add summary version: meeting \(meetingID) not found"
+            )
+            return
+        }
+
+        recordings[index].summaryVersions.append(version)
+        await save()
+
+        LoggerService.shared.log(
+            category: .general,
+            level: .debug,
+            message: "[MetadataManager] Added summary version \(version.versionNumber) to meeting \(meetingID)"
+        )
+    }
+
     // MARK: - Migration (F-6.0)
 
     /// Scan Recordings directory and add missing files to index asynchronously

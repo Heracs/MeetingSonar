@@ -241,20 +241,19 @@ private struct PulsingDot: View {
 
 @available(macOS 13.0, *)
 private struct ThreeDotIndicator: View {
-    @State private var phase = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<3) { index in
-                Circle()
-                    .frame(width: 4, height: 4)
-                    .opacity(phase == index ? 1.0 : 0.3)
+        TimelineView(.animation(minimumInterval: 0.3, paused: false)) { timeline in
+            let phase = Int(timeline.date.timeIntervalSince1970 * 3) % 3
+            HStack(spacing: 2) {
+                ForEach(0..<3) { index in
+                    Circle()
+                        .frame(width: 4, height: 4)
+                        .opacity(phase == index ? 1.0 : 0.3)
+                }
             }
-        }
-        .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
-                phase = (phase + 1) % 3
-            }
+            .opacity(reduceMotion ? 0.6 : 1.0)
         }
     }
 }

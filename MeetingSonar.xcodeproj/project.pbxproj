@@ -103,6 +103,7 @@
 		F2DF543815B945F325B43FE2 /* StartOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42B432F865B4CC08F283BAD0 /* StartOverlayView.swift */; };
 		FBFBB4256CC9639B32B32186 /* TranscriptModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEC3A69CC32C43544729391 /* TranscriptModel.swift */; };
 		FEA2D3E4C5B6A7B8C9D0E1F2 /* SensitiveDataSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB2C3D4E5F6A7B8C9D0E1F2 /* SensitiveDataSanitizer.swift */; };
+		FF67E3E722D743ED9FD3DAC08AACFA19 /* MockCloudServiceProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EC5B26B42914F27BDF94BE76914D63A /* MockCloudServiceProvider.swift */; };
 		Y1A2B3C4D5E6F7A8B9C0D1E1 /* StreamingSummaryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = Y1A2B3C4D5E6F7A8B9C0D1E0 /* StreamingSummaryViewModel.swift */; };
 		Y2A2B3C4D5E6F7A8B9C0D1E1 /* StreamingSummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = Y2A2B3C4D5E6F7A8B9C0D1E0 /* StreamingSummaryView.swift */; };
 		Z1A2B3C4D5E6F7A8B9C0D1E3 /* QualityPresetPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = Z1A2B3C4D5E6F7A8B9C0D1E2 /* QualityPresetPicker.swift */; };
@@ -151,6 +152,7 @@
 		619E98447C5D49DFB26FE9B3 /* RecordingListColumn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecordingListColumn.swift; sourceTree = "<group>"; };
 		674D858A31EF6B36DFBCE8EC /* AudioPlayerManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AudioPlayerManager.swift; path = MeetingSonar/Services/AudioPlayerManager.swift; sourceTree = "<group>"; };
 		6C3F6353DB965BEE4B278AB5 /* MenuIconGenerator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuIconGenerator.swift; path = MeetingSonar/Services/MenuIconGenerator.swift; sourceTree = "<group>"; };
+		6EC5B26B42914F27BDF94BE76914D63A /* MockCloudServiceProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockCloudServiceProvider.swift; sourceTree = "<group>"; };
 		6F7224EE494A530113844FAE /* PromptSelectionViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PromptSelectionViewModel.swift; sourceTree = "<group>"; };
 		744BE2BB5BB8DC55B7DF6EC7 /* VersionPickers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VersionPickers.swift; sourceTree = "<group>"; };
 		74EC0BD1E20C211127471D2B /* MockLogMonitorService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockLogMonitorService.swift; sourceTree = "<group>"; };
@@ -508,6 +510,7 @@
 			children = (
 				B8C9D0E1F2A3B4C5D6E7F8A9 /* MockRecordingService.swift */,
 				B9D0E1F2A3B4C5D6E7F8A9B0 /* MockMetadataManager.swift */,
+				6EC5B26B42914F27BDF94BE76914D63A /* MockCloudServiceProvider.swift */,
 				B0E1F2A3B4C5D6E7F8A9B0C1 /* MockSettingsManager.swift */,
 				B1F2A3B4C5D6E7F8A9B0C1D2 /* MockDetectionService.swift */,
 				B2A3B4C5D6E7F8A9B0C1D2E3 /* MockNotificationManager.swift */,
@@ -810,6 +813,7 @@
 				A6E7F8A9B0C1D2E3F4A5B6C7 /* ASREngineFactory.swift in Sources */,
 				A7F8A9B0C1D2E3F4A5B6C7D8 /* MockRecordingService.swift in Sources */,
 				A8A9B0C1D2E3F4A5B6C7D8E9 /* MockMetadataManager.swift in Sources */,
+				FF67E3E722D743ED9FD3DAC08AACFA19 /* MockCloudServiceProvider.swift in Sources */,
 				A9B0C1D2E3F4A5B6C7D8E9F0 /* MockSettingsManager.swift in Sources */,
 				AAC1D2E3F4A5B6C7D8E9F0A1 /* MockDetectionService.swift in Sources */,
 				ABD2E3F4A5B6C7D8E9F0A1B2 /* MockNotificationManager.swift in Sources */,

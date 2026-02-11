@@ -146,6 +146,22 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
         self.urlSession = URLSession(configuration: config)
     }
 
+    // MARK: - Logging Helpers
+
+    private func truncateContent(_ content: String, maxLength: Int = 20) -> String {
+        if content.count <= maxLength {
+            return content
+        }
+        return String(content.prefix(maxLength)) + "..."
+    }
+
+    private func maskAPIKey(_ key: String) -> String {
+        if key.count <= 12 {
+            return "***"
+        }
+        return key.prefix(8) + "..." + key.suffix(4)
+    }
+
     // MARK: - ASR Implementation
 
     func transcribe(
@@ -153,12 +169,25 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
         model: String,
         prompt: String?
     ) async throws -> CloudTranscriptionResult {
-        logger.info("Starting OpenAI-compatible ASR with model: \(model)")
-
         let endpoint = "\(baseURL)/audio/transcriptions"
         guard let url = URL(string: endpoint) else {
             throw CloudServiceError.invalidURL
         }
+
+        // Log request
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [\(provider.displayName)] API Request:
+        ├─ Endpoint: \(endpoint)
+        ├─ Method: POST
+        ├─ Headers:
+        │  ├─ Content-Type: multipart/form-data
+        │  ├─ Authorization: Bearer \(maskAPIKey(apiKey))
+        │  └─ Content-Length: \(audioData.count) bytes
+        └─ Body:
+           ├─ Model: \(model)
+           ├─ Audio Size: \(String(format: "%.2f", Double(audioData.count) / 1024 / 1024)) MB
+           └─ Prompt: \(prompt.map { truncateContent($0) } ?? "N/A")
+        """)
 
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
@@ -195,14 +224,35 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
             throw CloudServiceError.invalidResponse
         }
 
+        let processingTime = Date().timeIntervalSince(startTime)
+
         guard httpResponse.statusCode == 200 else {
+            LoggerService.shared.log(category: .ai, level: .error, message: """
+            [\(provider.displayName)] API Response:
+            ├─ Status Code: \(httpResponse.statusCode)
+            ├─ Processing Time: \(String(format: "%.2f", processingTime))s
+            ├─ Body:
+            │  └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")
+            └─ Result: ERROR
+            """)
             throw handleHTTPError(httpResponse, data: data)
         }
 
         let result = try parseASRResponse(data: data)
-        let processingTime = Date().timeIntervalSince(startTime)
 
-        logger.info("ASR completed in \(processingTime)s")
+        // Log response
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [\(provider.displayName)] API Response:
+        ├─ Status Code: \(httpResponse.statusCode)
+        ├─ Processing Time: \(String(format: "%.2f", processingTime))s
+        ├─ Body:
+        │  ├─ Text: \(truncateContent(result.text, maxLength: 50))
+        │  ├─ Segments: \(result.segments.count)
+        │  ├─ Language: \(result.language ?? "N/A")
+        │  ├─ Audio Duration: \(result.audioDuration.map { String(format: "%.2f", $0) + "s" } ?? "N/A")
+        │  └─ Tokens: \(result.usage.map { "\($0.promptTokens)/\($0.completionTokens)" } ?? "N/A")
+        └─ Result: SUCCESS
+        """)
 
         return CloudTranscriptionResult(
             text: result.text,
@@ -234,22 +284,42 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
         temperature: Double,
         maxTokens: Int
     ) async throws -> CloudLLMResult {
-        logger.info("Starting OpenAI-compatible LLM with model: \(model)")
-
         let endpoint = "\(baseURL)/chat/completions"
         guard let url = URL(string: endpoint) else {
             throw CloudServiceError.invalidURL
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
+        // Build messages for logging
         let messagesDict = messages.map { [
             "role": $0.role.rawValue,
             "content": $0.content
         ] }
+
+        // Log request
+        var messagesLog = ""
+        for (index, msg) in messages.enumerated() {
+            let prefix = index == messages.count - 1 ? "   └─" : "   ├─"
+            messagesLog += "\n\(prefix) [\(msg.role.rawValue)]: \(truncateContent(msg.content))"
+        }
+
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [\(provider.displayName)] API Request:
+        ├─ Endpoint: \(endpoint)
+        ├─ Method: POST
+        ├─ Headers:
+        │  ├─ Content-Type: application/json
+        │  └─ Authorization: Bearer \(maskAPIKey(apiKey))
+        └─ Body:
+           ├─ Model: \(model)
+           ├─ Messages (count: \(messages.count)):\(messagesLog)
+           ├─ Temperature: \(temperature)
+           └─ Max Tokens: \(maxTokens)
+        """)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let body: [String: Any] = [
             "model": model,
@@ -268,14 +338,34 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
             throw CloudServiceError.invalidResponse
         }
 
+        let processingTime = Date().timeIntervalSince(startTime)
+
         guard httpResponse.statusCode == 200 else {
+            LoggerService.shared.log(category: .ai, level: .error, message: """
+            [\(provider.displayName)] API Response:
+            ├─ Status Code: \(httpResponse.statusCode)
+            ├─ Processing Time: \(String(format: "%.2f", processingTime))s
+            ├─ Body:
+            │  └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")
+            └─ Result: ERROR
+            """)
             throw handleHTTPError(httpResponse, data: data)
         }
 
         let result = try parseLLMResponse(data: data)
-        let processingTime = Date().timeIntervalSince(startTime)
 
-        logger.info("LLM completed in \(processingTime)s")
+        // Log response
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [\(provider.displayName)] API Response:
+        ├─ Status Code: \(httpResponse.statusCode)
+        ├─ Processing Time: \(String(format: "%.2f", processingTime))s
+        ├─ Body:
+        │  ├─ Content: \(truncateContent(result.text, maxLength: 50))
+        │  ├─ Input Tokens: \(result.inputTokens)
+        │  ├─ Output Tokens: \(result.outputTokens)
+        │  └─ Total Tokens: \(result.inputTokens + result.outputTokens)
+        └─ Result: SUCCESS
+        """)
 
         return CloudLLMResult(
             text: result.text,
@@ -294,8 +384,6 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
         temperature: Double?,
         maxTokens: Int?
     ) async throws -> AsyncStream<String> {
-        logger.info("Starting OpenAI-compatible streaming LLM with model: \(model)")
-
         let endpoint = "\(baseURL)/chat/completions"
         guard let url = URL(string: endpoint) else {
             throw CloudServiceError.invalidURL
@@ -325,11 +413,34 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
             body["max_tokens"] = tokens
         }
 
+        // Log request
+        var messagesLog = ""
+        for (index, msg) in messages.enumerated() {
+            let prefix = index == messages.count - 1 ? "   └─" : "   ├─"
+            messagesLog += "\n\(prefix) [\(msg.role.rawValue)]: \(truncateContent(msg.content))"
+        }
+
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [\(provider.displayName)] API Request (Stream):
+        ├─ Endpoint: \(endpoint)
+        ├─ Method: POST
+        ├─ Headers:
+        │  ├─ Content-Type: application/json
+        │  └─ Authorization: Bearer \(maskAPIKey(apiKey))
+        └─ Body:
+           ├─ Model: \(model)
+           ├─ Messages (count: \(messages.count)):\(messagesLog)
+           ├─ Temperature: \(temperature.map { String($0) } ?? "default")
+           ├─ Max Tokens: \(maxTokens.map { String($0) } ?? "default")
+           └─ Stream: true
+        """)
+
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         return AsyncStream { continuation in
             Task {
                 do {
+                    let startTime = Date()
                     let (bytes, response) = try await urlSession.bytes(for: request)
 
                     guard let httpResponse = response as? HTTPURLResponse else {
@@ -341,9 +452,17 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
                         for try await byte in bytes {
                             data.append(byte)
                         }
+                        LoggerService.shared.log(category: .ai, level: .error, message: """
+                        [\(self.provider.displayName)] API Response (Stream):
+                        ├─ Status Code: \(httpResponse.statusCode)
+                        ├─ Body:
+                        │  └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")
+                        └─ Result: ERROR
+                        """)
                         throw self.handleHTTPError(httpResponse, data: data)
                     }
 
+                    var totalContent = ""
                     for try await line in bytes.lines {
                         if Task.isCancelled {
                             continuation.finish()
@@ -357,6 +476,16 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
 
                         // Check for stream end
                         if jsonString == "[DONE]" {
+                            let processingTime = Date().timeIntervalSince(startTime)
+                            LoggerService.shared.log(category: .ai, level: .debug, message: """
+                            [\(self.provider.displayName)] API Response (Stream):
+                            ├─ Status Code: \(httpResponse.statusCode)
+                            ├─ Processing Time: \(String(format: "%.2f", processingTime))s
+                            ├─ Body:
+                            │  ├─ Content: \(self.truncateContent(totalContent, maxLength: 50))
+                            │  └─ Total Length: \(totalContent.count) chars
+                            └─ Result: SUCCESS
+                            """)
                             continuation.finish()
                             return
                         }
@@ -371,12 +500,13 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
                             continue
                         }
 
+                        totalContent += content
                         continuation.yield(content)
                     }
 
                     continuation.finish()
                 } catch {
-                    logger.error("Streaming error: \(error.localizedDescription)")
+                    LoggerService.shared.log(category: .ai, level: .error, message: "[\(self.provider.displayName)] Streaming error: \(error.localizedDescription)")
                     continuation.finish()
                 }
             }

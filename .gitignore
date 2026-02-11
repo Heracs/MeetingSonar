@@ -32,8 +32,10 @@ xcuserdata/
 *.xcuserstate
 
 # custom ignore
+.agent/
 .cursorrules
 .specstory/
+CLAUDE.md
 
 # Auto-generated build info
 **/BuildInfo.generated.swift

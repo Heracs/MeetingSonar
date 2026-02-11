@@ -22,6 +22,7 @@ actor CloudAIModelManager {
     private enum Keys {
         static let models = "cloudAIModels_v2"
         static let migrationCompleted = "cloudAIMigrationCompleted_v2"
+        static let phase5MigrationCompleted = "cloudAIPhase5MigrationCompleted_v2"
     }
 
     // MARK: - Published State
@@ -39,6 +40,8 @@ actor CloudAIModelManager {
         Task {
             await loadModels()
             await migrateIfNeeded()
+            // Phase 5: 数据迁移（移除 OpenAI、ASR 配置调整、添加 qualityPreset）
+            await migrateConfigurations()
             // Notify that initialization is complete and models are available
             await notifyChange()
         }
@@ -191,7 +194,141 @@ actor CloudAIModelManager {
         }
     }
 
-    // MARK: - Migration
+    // MARK: - Phase 5 Migration (Task #19)
+
+    /// Phase 5: 数据迁移 - 处理移除的配置和添加新字段
+    /// - 移除 OpenAI 配置（迁移到 DeepSeek）
+    /// - 移除 Aliyun/DeepSeek 的 ASR 配置（仅 Zhipu 支持 ASR）
+    /// - 为旧配置添加默认 qualityPreset
+    func migrateConfigurations() async {
+        guard !defaults.bool(forKey: Keys.phase5MigrationCompleted) else {
+            logger.info("Phase 5 migration already completed, skipping")
+            return
+        }
+
+        logger.info("Starting Phase 5 migration...")
+
+        var migratedConfigs: [CloudAIModelConfig] = []
+        var migrationLog: [String] = []
+
+        for var config in models {
+            let originalProvider = config.provider
+            var needsUpdate = false
+
+            // 1. 处理 OpenAI 配置迁移
+            if config.provider.rawValue == "openai" {
+                logger.info("Migrating OpenAI config to DeepSeek: \(config.displayName)")
+
+                // 创建 DeepSeek 配置替代 OpenAI
+                var updatedConfig = config
+                updatedConfig.provider = .deepseek
+                updatedConfig.baseURL = OnlineServiceProvider.deepseek.defaultBaseURL
+                updatedConfig.displayName = config.displayName.replacingOccurrences(of: "OpenAI", with: "DeepSeek")
+
+                // 更新 LLM 配置为 DeepSeek 默认模型
+                if var llmConfig = updatedConfig.llmConfig {
+                    llmConfig.modelName = OnlineServiceProvider.deepseek.defaultLLMModel
+                    if llmConfig.qualityPreset == nil {
+                        llmConfig.qualityPreset = .balanced
+                    }
+                    updatedConfig.llmConfig = llmConfig
+                }
+
+                // 移除 ASR 能力（DeepSeek 不支持 ASR）
+                updatedConfig.capabilities.remove(.asr)
+                updatedConfig.asrConfig = nil
+
+                config = updatedConfig
+                needsUpdate = true
+                migrationLog.append("Migrated OpenAI config '\(originalProvider.displayName)' to DeepSeek")
+            }
+
+            // 2. 处理 Aliyun/DeepSeek/Kimi 的 ASR 配置移除
+            if !config.provider.supportsASR && config.supports(.asr) {
+                logger.info("Removing ASR capability from \(config.provider.displayName) config: \(config.displayName)")
+
+                config.capabilities.remove(.asr)
+                config.asrConfig = nil
+                needsUpdate = true
+                migrationLog.append("Removed ASR capability from \(config.provider.displayName) config")
+            }
+
+            // 3. 为缺少 qualityPreset 的 LLM 配置添加默认值
+            if config.supports(.llm) {
+                if var llmConfig = config.llmConfig {
+                    // 检查是否需要添加 qualityPreset
+                    if llmConfig.qualityPreset == nil {
+                        logger.info("Adding default qualityPreset (.balanced) to \(config.displayName)")
+                        llmConfig.qualityPreset = .balanced
+                        config.llmConfig = llmConfig
+                        needsUpdate = true
+                        migrationLog.append("Added default qualityPreset to \(config.displayName)")
+                    }
+                } else {
+                    // 如果支持 LLM 但没有配置，创建默认配置
+                    logger.info("Creating default LLM config for \(config.displayName)")
+                    config.llmConfig = LLMModelSettings(
+                        modelName: config.provider.defaultLLMModel,
+                        qualityPreset: .balanced,
+                        temperature: nil,
+                        maxTokens: nil,
+                        topP: nil,
+                        enableStreaming: nil
+                    )
+                    needsUpdate = true
+                    migrationLog.append("Created default LLM config for \(config.displayName)")
+                }
+            }
+
+            // 4. 如果配置没有任何能力，添加默认 LLM 能力
+            if config.capabilities.isEmpty {
+                logger.info("Adding default LLM capability to \(config.displayName)")
+                config.capabilities.insert(.llm)
+                config.llmConfig = LLMModelSettings(
+                    modelName: config.provider.defaultLLMModel,
+                    qualityPreset: .balanced,
+                    temperature: nil,
+                    maxTokens: nil,
+                    topP: nil,
+                    enableStreaming: nil
+                )
+                needsUpdate = true
+                migrationLog.append("Added default LLM capability to \(config.displayName)")
+            }
+
+            // 更新时间戳（如果配置被修改）
+            if needsUpdate {
+                config.updatedAt = Date()
+            }
+
+            migratedConfigs.append(config)
+        }
+
+        // 保存迁移后的配置
+        models = migratedConfigs
+        await saveModels()
+
+        // 标记迁移完成
+        defaults.set(true, forKey: Keys.phase5MigrationCompleted)
+
+        // 记录迁移结果
+        if migrationLog.isEmpty {
+            logger.info("Phase 5 migration completed. No changes needed.")
+        } else {
+            logger.info("Phase 5 migration completed. Changes: \(migrationLog.joined(separator: "; "))")
+        }
+
+        // 通知 UI 更新
+        await notifyChange()
+    }
+
+    /// 重置 Phase 5 迁移标记（用于测试或重新迁移）
+    func resetPhase5Migration() async {
+        defaults.set(false, forKey: Keys.phase5MigrationCompleted)
+        logger.info("Phase 5 migration flag reset")
+    }
+
+    // MARK: - Legacy Migration (Phase 1-4)
 
     // 旧的 UserDefaults keys
     private let legacyASRModelsKey = "onlineASRModels"
@@ -334,6 +471,7 @@ actor CloudAIModelManager {
 
         // 重置迁移标记
         defaults.set(false, forKey: Keys.migrationCompleted)
+        defaults.set(false, forKey: Keys.phase5MigrationCompleted)
 
         await notifyChange()
 

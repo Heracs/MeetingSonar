@@ -33,6 +33,22 @@ actor AliyunServiceProvider: CloudServiceProvider {
         self.urlSession = URLSession(configuration: config)
     }
 
+    // MARK: - Logging Helpers
+
+    private func truncateContent(_ content: String, maxLength: Int = 20) -> String {
+        if content.count <= maxLength {
+            return content
+        }
+        return String(content.prefix(maxLength)) + "..."
+    }
+
+    private func maskAPIKey(_ key: String) -> String {
+        if key.count <= 12 {
+            return "***"
+        }
+        return key.prefix(8) + "..." + key.suffix(4)
+    }
+
     // MARK: - ASR Implementation
 
     func transcribe(
@@ -40,21 +56,25 @@ actor AliyunServiceProvider: CloudServiceProvider {
         model: String,
         prompt: String?
     ) async throws -> CloudTranscriptionResult {
-        let audioSizeMB = Double(audioData.count) / 1024 / 1024
-
-        // 详细日志：ASR 请求信息
-        LoggerService.shared.log(category: .ai, message: """
-        [Aliyun ASR Request] Starting transcription
-        ├─ Provider: Aliyun DashScope
-        ├─ Model: \(model)
-        ├─ Audio Size: \(String(format: "%.2f", audioSizeMB)) MB
-        └─ Prompt: \(prompt ?? "N/A")
-        """)
-
         let endpoint = "\(baseURL)/services/audio/asr/transcription"
         guard let url = URL(string: endpoint) else {
             throw CloudServiceError.invalidURL
         }
+
+        // Log request
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [Aliyun] API Request:
+        ├─ Endpoint: \(endpoint)
+        ├─ Method: POST
+        ├─ Headers:
+        │  ├─ Content-Type: multipart/form-data
+        │  ├─ Authorization: Bearer \(maskAPIKey(apiKey))
+        │  └─ Content-Length: \(audioData.count) bytes
+        └─ Body:
+           ├─ Model: \(model)
+           ├─ Audio Size: \(String(format: "%.2f", Double(audioData.count) / 1024 / 1024)) MB
+           └─ Prompt: \(prompt.map { truncateContent($0) } ?? "N/A")
+        """)
 
         // 构建 multipart/form-data 请求
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -102,11 +122,12 @@ actor AliyunServiceProvider: CloudServiceProvider {
         // 检查响应状态
         guard httpResponse.statusCode == 200 else {
             LoggerService.shared.log(category: .ai, level: .error, message: """
-            [Aliyun ASR Response] HTTP ERROR
+            [Aliyun] API Response:
             ├─ Status Code: \(httpResponse.statusCode)
-            ├─ Model: \(model)
             ├─ Processing Time: \(String(format: "%.2f", processingTime))s
-            └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")
+            ├─ Body:
+            │  └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")
+            └─ Result: ERROR
             """)
             throw handleHTTPError(httpResponse, data: data)
         }
@@ -114,16 +135,17 @@ actor AliyunServiceProvider: CloudServiceProvider {
         // 解析响应
         let result = try parseASRResponse(data: data)
 
-        // 详细日志：成功响应
-        LoggerService.shared.log(category: .ai, message: """
-        [Aliyun ASR Response] SUCCESS
+        // Log response
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [Aliyun] API Response:
         ├─ Status Code: \(httpResponse.statusCode)
-        ├─ Model: \(model)
         ├─ Processing Time: \(String(format: "%.2f", processingTime))s
-        ├─ Text Length: \(result.text.count) chars
-        ├─ Segments: \(result.segments.count)
-        ├─ Language: \(result.language ?? "N/A")
-        └─ Audio Duration: \(result.audioDuration.map { String(format: "%.2f", $0) + "s" } ?? "N/A")
+        ├─ Body:
+        │  ├─ Text: \(truncateContent(result.text, maxLength: 50))
+        │  ├─ Segments: \(result.segments.count)
+        │  ├─ Language: \(result.language ?? "N/A")
+        │  └─ Audio Duration: \(result.audioDuration.map { String(format: "%.2f", $0) + "s" } ?? "N/A")
+        └─ Result: SUCCESS
         """)
 
         return CloudTranscriptionResult(
@@ -157,20 +179,37 @@ actor AliyunServiceProvider: CloudServiceProvider {
         temperature: Double,
         maxTokens: Int
     ) async throws -> CloudLLMResult {
-        // 详细日志：LLM 请求信息
-        LoggerService.shared.log(category: .ai, message: """
-        [Aliyun LLM Request] Starting chat completion
-        ├─ Provider: Aliyun DashScope
-        ├─ Model: \(model)
-        ├─ Temperature: \(temperature)
-        ├─ Max Tokens: \(maxTokens)
-        └─ Messages: \(messages.count)
-        """)
-
         let endpoint = "\(baseURL)/services/aigc/text-generation/generation"
         guard let url = URL(string: endpoint) else {
             throw CloudServiceError.invalidURL
         }
+
+        // Build messages for logging
+        let messagesDict = messages.map { [
+            "role": $0.role.rawValue,
+            "content": $0.content
+        ] }
+
+        // Log request
+        var messagesLog = ""
+        for (index, msg) in messages.enumerated() {
+            let prefix = index == messages.count - 1 ? "   └─" : "   ├─"
+            messagesLog += "\n\(prefix) [\(msg.role.rawValue)]: \(truncateContent(msg.content))"
+        }
+
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [Aliyun] API Request:
+        ├─ Endpoint: \(endpoint)
+        ├─ Method: POST
+        ├─ Headers:
+        │  ├─ Content-Type: application/json
+        │  └─ Authorization: Bearer \(maskAPIKey(apiKey))
+        └─ Body:
+           ├─ Model: \(model)
+           ├─ Messages (count: \(messages.count)):\(messagesLog)
+           ├─ Temperature: \(temperature)
+           └─ Max Tokens: \(maxTokens)
+        """)
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -178,11 +217,6 @@ actor AliyunServiceProvider: CloudServiceProvider {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         // 构建请求体（阿里云格式）
-        let messagesDict = messages.map { [
-            "role": $0.role.rawValue,
-            "content": $0.content
-        ] }
-
         let body: [String: Any] = [
             "model": model,
             "input": [
@@ -209,27 +243,29 @@ actor AliyunServiceProvider: CloudServiceProvider {
 
         guard httpResponse.statusCode == 200 else {
             LoggerService.shared.log(category: .ai, level: .error, message: """
-            [Aliyun LLM Response] HTTP ERROR
+            [Aliyun] API Response:
             ├─ Status Code: \(httpResponse.statusCode)
-            ├─ Model: \(model)
             ├─ Processing Time: \(String(format: "%.2f", processingTime))s
-            └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")
+            ├─ Body:
+            │  └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")
+            └─ Result: ERROR
             """)
             throw handleHTTPError(httpResponse, data: data)
         }
 
         let result = try parseLLMResponse(data: data)
 
-        // 详细日志：LLM 响应信息
-        LoggerService.shared.log(category: .ai, message: """
-        [Aliyun LLM Response] SUCCESS
+        // Log response
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [Aliyun] API Response:
         ├─ Status Code: \(httpResponse.statusCode)
-        ├─ Model: \(model)
         ├─ Processing Time: \(String(format: "%.2f", processingTime))s
-        ├─ Output Length: \(result.text.count) chars
-        ├─ Input Tokens: \(result.inputTokens)
-        ├─ Output Tokens: \(result.outputTokens)
-        └─ Total Tokens: \(result.inputTokens + result.outputTokens)
+        ├─ Body:
+        │  ├─ Content: \(truncateContent(result.text, maxLength: 50))
+        │  ├─ Input Tokens: \(result.inputTokens)
+        │  ├─ Output Tokens: \(result.outputTokens)
+        │  └─ Total Tokens: \(result.inputTokens + result.outputTokens)
+        └─ Result: SUCCESS
         """)
 
         return CloudLLMResult(
@@ -394,8 +430,6 @@ actor AliyunServiceProvider: CloudServiceProvider {
         temperature: Double?,
         maxTokens: Int?
     ) async throws -> AsyncStream<String> {
-        LoggerService.shared.log(category: .ai, message: "[Aliyun] Starting streaming LLM with model: \(model)")
-
         let endpoint = "\(baseURL)/services/aigc/text-generation/generation"
         guard let url = URL(string: endpoint) else {
             throw CloudServiceError.invalidURL
@@ -427,11 +461,34 @@ actor AliyunServiceProvider: CloudServiceProvider {
             "stream": true  // Enable streaming
         ]
 
+        // Log request
+        var messagesLog = ""
+        for (index, msg) in messages.enumerated() {
+            let prefix = index == messages.count - 1 ? "   └─" : "   ├─"
+            messagesLog += "\n\(prefix) [\(msg.role.rawValue)]: \(truncateContent(msg.content))"
+        }
+
+        LoggerService.shared.log(category: .ai, level: .debug, message: """
+        [Aliyun] API Request (Stream):
+        ├─ Endpoint: \(endpoint)
+        ├─ Method: POST
+        ├─ Headers:
+        │  ├─ Content-Type: application/json
+        │  └─ Authorization: Bearer \(maskAPIKey(apiKey))
+        └─ Body:
+           ├─ Model: \(model)
+           ├─ Messages (count: \(messages.count)):\(messagesLog)
+           ├─ Temperature: \(temperature.map { String($0) } ?? "default")
+           ├─ Max Tokens: \(maxTokens.map { String($0) } ?? "default")
+           └─ Stream: true
+        """)
+
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         return AsyncStream { continuation in
             Task {
                 do {
+                    let startTime = Date()
                     let (bytes, response) = try await urlSession.bytes(for: request)
 
                     guard let httpResponse = response as? HTTPURLResponse else {
@@ -443,9 +500,17 @@ actor AliyunServiceProvider: CloudServiceProvider {
                         for try await byte in bytes {
                             data.append(byte)
                         }
+                        LoggerService.shared.log(category: .ai, level: .error, message: """
+                        [Aliyun] API Response (Stream):
+                        ├─ Status Code: \(httpResponse.statusCode)
+                        ├─ Body:
+                        │  └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")
+                        └─ Result: ERROR
+                        """)
                         throw self.handleHTTPError(httpResponse, data: data)
                     }
 
+                    var totalContent = ""
                     for try await line in bytes.lines {
                         if Task.isCancelled {
                             continuation.finish()
@@ -459,6 +524,16 @@ actor AliyunServiceProvider: CloudServiceProvider {
 
                         // Check for stream end
                         if jsonString == "[DONE]" {
+                            let processingTime = Date().timeIntervalSince(startTime)
+                            LoggerService.shared.log(category: .ai, level: .debug, message: """
+                            [Aliyun] API Response (Stream):
+                            ├─ Status Code: \(httpResponse.statusCode)
+                            ├─ Processing Time: \(String(format: "%.2f", processingTime))s
+                            ├─ Body:
+                            │  ├─ Content: \(self.truncateContent(totalContent, maxLength: 50))
+                            │  └─ Total Length: \(totalContent.count) chars
+                            └─ Result: SUCCESS
+                            """)
                             continuation.finish()
                             return
                         }
@@ -474,6 +549,7 @@ actor AliyunServiceProvider: CloudServiceProvider {
                             continue
                         }
 
+                        totalContent += content
                         continuation.yield(content)
                     }
 

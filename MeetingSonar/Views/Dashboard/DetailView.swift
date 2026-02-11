@@ -52,6 +52,11 @@ struct DetailView: View {
     // Tab Selection State (0 = Transcript, 1 = Summary)
     @State private var selectedTab: Int = 0
 
+    // MARK: - Streaming Config State
+    @State private var streamingConfig: CloudAIModelConfig?
+    @State private var streamingProvider: (any CloudServiceProvider)?
+    @State private var isLoadingStreamingConfig = false
+
     // MARK: - Body
 
     var body: some View {
@@ -370,6 +375,9 @@ struct DetailView: View {
             if showStreamingView {
                 // Streaming Summary View (v1.1.0)
                 streamingSummaryContent()
+                    .task {
+                        await loadStreamingConfig()
+                    }
             } else if !meta.summaryVersions.isEmpty {
                 // Static Summary View
                 staticSummaryContent(meta: meta)
@@ -382,8 +390,10 @@ struct DetailView: View {
 
     @ViewBuilder
     private func streamingSummaryContent() -> some View {
-        if let config = getCurrentLLMConfig(),
-           let provider = getCurrentLLMProvider() {
+        if isLoadingStreamingConfig {
+            loadingConfigView()
+        } else if let config = streamingConfig,
+                  let provider = streamingProvider {
             let transcriptText = transcriptSegments.map { $0.text }.joined(separator: "\n")
 
             StreamingSummaryView(
@@ -397,21 +407,54 @@ struct DetailView: View {
                 loadSummary(for: recordingID)
             }
         } else {
-            VStack(spacing: 12) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 48))
-                    .foregroundColor(.orange)
-
-                Text("未配置语言模型")
-                    .font(.title3)
-                    .foregroundColor(.secondary)
-
-                Text("请在设置中配置云端 AI 服务")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            configErrorView()
         }
+    }
+
+    private func loadingConfigView() -> some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("加载配置中...")
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func configErrorView() -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 48))
+                .foregroundColor(.orange)
+
+            Text("未配置语言模型")
+                .font(.title3)
+                .foregroundColor(.secondary)
+
+            Text("请在设置中配置云端 AI 服务")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func loadStreamingConfig() async {
+        isLoadingStreamingConfig = true
+        defer { isLoadingStreamingConfig = false }
+
+        guard let modelId = settings.currentLLMModel?.id,
+              let config = await CloudAIModelManager.shared.getModel(byId: modelId) else {
+            return
+        }
+
+        let apiKey = await CloudAIModelManager.shared.getAPIKey(for: config.id) ?? ""
+        let provider = await CloudServiceFactory.shared.createProvider(
+            config.provider,
+            apiKey: apiKey,
+            baseURL: config.baseURL
+        )
+
+        streamingConfig = config
+        streamingProvider = provider
     }
 
     private func staticSummaryContent(meta: MeetingMeta) -> some View {
@@ -510,43 +553,6 @@ struct DetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Helper Methods for Streaming
-
-    private func getCurrentLLMConfig() -> CloudAIModelConfig? {
-        guard let modelId = settings.currentLLMModel?.id,
-              let uuid = UUID(uuidString: modelId) else {
-            return nil
-        }
-
-        // Get config from CloudAIModelManager
-        var config: CloudAIModelConfig?
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            config = await CloudAIModelManager.shared.getModel(byId: modelId)
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return config
-    }
-
-    private func getCurrentLLMProvider() -> (any CloudServiceProvider)? {
-        guard let config = getCurrentLLMConfig() else { return nil }
-
-        var provider: (any CloudServiceProvider)?
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            let apiKey = await CloudAIModelManager.shared.getAPIKey(for: config.id) ?? ""
-            provider = await CloudServiceFactory.shared.createProvider(
-                config.provider,
-                apiKey: apiKey,
-                baseURL: config.baseURL
-            )
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return provider
-    }
-
     // MARK: - Status Badge
 
     private func StatusBadge(status: MeetingMeta.ProcessingStatus) -> some View {
@@ -641,6 +647,10 @@ struct DetailView: View {
         // v1.1.0: Check if streaming is enabled
         if enableStreamingSummary {
             // Use streaming summary view
+            // Reset config state before showing to avoid race condition
+            streamingConfig = nil
+            streamingProvider = nil
+            isLoadingStreamingConfig = true
             showStreamingView = true
             selectedTab = 1
             return

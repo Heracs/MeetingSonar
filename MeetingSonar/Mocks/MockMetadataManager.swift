@@ -119,6 +119,13 @@ final class MockMetadataManager: MetadataManagerProtocol {
         }
     }
 
+    func addSummaryVersion(_ version: SummaryVersion, to meetingID: UUID) async {
+        guard let index = recordings.firstIndex(where: { $0.id == meetingID }) else {
+            return
+        }
+        recordings[index].summaryVersions.append(version)
+    }
+
     // MARK: - Test Helpers
 
     /// Configure for testing (clears all state)
