@@ -134,6 +134,14 @@ struct UnifiedSettingsView: View {
                     .frame(minWidth: 140)
                 }
                 .accessibilityIdentifier("Picker_UI_Language")
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("settings.language.ui.explanation")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 16)
             }
         }
     }
@@ -416,6 +424,14 @@ struct UnifiedSettingsView: View {
                     .frame(minWidth: 140)
                 }
                 .accessibilityIdentifier("Picker_Language")
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("settings.transcripts.language.explanation")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 16)
             }
         }
     }
@@ -457,7 +473,10 @@ struct UnifiedSettingsView: View {
     private func confirmLanguageChange() {
         guard let newLanguage = pendingLanguageChange else { return }
 
-        // Apply the language change
+        // Update language preference BEFORE applying system changes
+        localizationManager.languagePreference = newLanguage
+
+        // Apply language change (sets AppleLanguages)
         _ = localizationManager.setLanguage(newLanguage)
 
         // Relaunch the app

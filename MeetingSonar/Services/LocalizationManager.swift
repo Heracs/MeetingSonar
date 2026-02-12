@@ -13,7 +13,11 @@ class LocalizationManager: ObservableObject {
     // "en" = English
     // "zh-Hans" = Chinese (Simplified)
     @AppStorage("app_language_preference")
-    var languagePreference: String = "system"
+    var languagePreference: String = "system" {
+        didSet {
+            objectWillChange.send()
+        }
+    }
     
     private init() {}
     

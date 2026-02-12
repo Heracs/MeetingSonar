@@ -87,6 +87,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Log app startup
+        logger.log(category: .general, level: .info, message: "App Started - MeetingSonar v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown")")
+
         // Log app version and build info
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
         logger.log(category: .general, message: "App Launch - MeetingSonar v\(version) (Build \(BuildInfo.fullBuildString))")

@@ -1490,6 +1490,17 @@
     "error.asr.modelNotLoaded.recovery" : {
 
     },
+    "error.asr.transcription_failed" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "转录失败"
+          }
+        }
+      }
+    },
     "error.asr.transcriptionFailed.%@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2063,6 +2074,39 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "请求过于频繁，请稍后再试"
+          }
+        }
+      }
+    },
+    "error.llm.invalid_config" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "LLM 配置无效"
+          }
+        }
+      }
+    },
+    "error.llm.no_api_key" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "请先配置云端 LLM 服务的 API Key"
+          }
+        }
+      }
+    },
+    "error.llm.no_model_configured" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "请先添加云端 LLM 模型配置"
           }
         }
       }
@@ -5053,6 +5097,23 @@
         }
       }
     },
+    "settings.language.ui.explanation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Controls the app display language (Chinese/English), requires restart to take effect. After selecting the interface language, the app will switch to the selected language on next launch."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "控制应用显示语言（中文/英文），需要重启生效。选择界面语言后，下次启动应用时界面会切换到选中语言。"
+          }
+        }
+      }
+    },
     "settings.permissions.description" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5644,6 +5705,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "英语"
+          }
+        }
+      }
+    },
+    "settings.transcripts.language.explanation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select the language for transcription results (Auto/English/Simplified Chinese), used for meeting minutes AI generation. Auto uses the system language; selecting English or Simplified Chinese forces generation in the corresponding language."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择转录结果的语言（自动/英文/简中），用于会议纪要 AI 生成。选择自动则使用与系统语言一致；选择英文或简体中文可强制使用对应语言生成。"
           }
         }
       }
@@ -6884,12 +6962,6 @@
       }
     },
     "点击上方「处理」按钮开始转录" : {
-
-    },
-    "点击上方「处理」按钮生成纪要" : {
-
-    },
-    "点击上方「生成纪要」按钮开始流式生成" : {
 
     },
     "点击右上角按钮创建新模板" : {

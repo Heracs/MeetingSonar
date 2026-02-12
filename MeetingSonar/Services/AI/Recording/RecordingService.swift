@@ -510,7 +510,15 @@ final class RecordingService: RecordingServiceProtocol {
         content.sound = .default
         
         let request = UNNotificationRequest(identifier: "MaxDurationReached", content: content, trigger: nil)
-        center.add(request)
+
+        // Use callback-based API for compatibility with non-async context
+        center.add(request) { error in
+            if let error = error {
+                self.logger.log(category: .recording, level: .warning, message: "[RecordingService] Failed to post max duration notification: \(error.localizedDescription)")
+            } else {
+                self.logger.log(category: .recording, level: .debug, message: "[RecordingService] Max duration notification posted successfully")
+            }
+        }
     }
     
     /// Setup AVAssetWriter for encoding audio
@@ -549,7 +557,7 @@ final class RecordingService: RecordingServiceProtocol {
         )
         
         var sourceFormat: CMAudioFormatDescription?
-        CMAudioFormatDescriptionCreate(
+        let status = CMAudioFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
             asbd: &inputASBD,
             layoutSize: 0,
@@ -559,8 +567,16 @@ final class RecordingService: RecordingServiceProtocol {
             extensions: nil,
             formatDescriptionOut: &sourceFormat
         )
-        
-        // Create audio input with source format hint
+
+        // Check if format description creation succeeded
+        if status != noErr || sourceFormat == nil {
+            logger.log(category: .recording, level: .warning, message: """
+                [RecordingService] CMAudioFormatDescriptionCreate failed with status: \(status)
+                Audio input will be created without source format hint (may affect compatibility).
+                """)
+        }
+
+        // Create audio input with source format hint (may be nil if creation failed above)
         audioInput = AVAssetWriterInput(
             mediaType: .audio,
             outputSettings: audioSettings,
@@ -606,7 +622,9 @@ final class RecordingService: RecordingServiceProtocol {
         // Adjust timing relative to session start
         if sessionStartTime == nil {
             sessionStartTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            LoggerService.shared.log(category: .recording, level: .debug, message: "[RecordingService] Session start time: \(CMTimeGetSeconds(sessionStartTime!))s")
+            if let startTime = sessionStartTime {
+                LoggerService.shared.log(category: .recording, level: .debug, message: "[RecordingService] Session start time: \(CMTimeGetSeconds(startTime))s")
+            }
         }
 
         // Create a new sample buffer with adjusted timing
@@ -640,14 +658,22 @@ final class RecordingService: RecordingServiceProtocol {
         )
         
         var adjustedBuffer: CMSampleBuffer?
-        CMSampleBufferCreateCopyWithNewTiming(
+        let status = CMSampleBufferCreateCopyWithNewTiming(
             allocator: kCFAllocatorDefault,
             sampleBuffer: sampleBuffer,
             sampleTimingEntryCount: 1,
             sampleTimingArray: &timingInfo,
             sampleBufferOut: &adjustedBuffer
         )
-        
+
+        // Log if buffer creation failed (should not happen with valid input)
+        if status != noErr || adjustedBuffer == nil {
+            logger.log(category: .recording, level: .error, message: """
+                [RecordingService] CMSampleBufferCreateCopyWithNewTiming failed with status: \(status)
+                Sample buffer will be dropped.
+                """)
+        }
+
         return adjustedBuffer
     }
 

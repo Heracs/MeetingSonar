@@ -299,38 +299,19 @@ extension TranscriptVersion {
         self.timestamp = try container.decode(Date.self, forKey: .timestamp)
         self.filePath = try container.decode(String.self, forKey: .filePath)
 
-        // Try to decode new fields
-        if let modelInfo = try? container.decode(ModelVersionInfo.self, forKey: .modelInfo) {
-            self.modelInfo = modelInfo
-        } else if let modelName = try? container.decode(String.self, forKey: .modelName) {
-            // Migration from old format
-            self.modelInfo = ModelVersionInfo(
-                modelId: "legacy",
-                displayName: modelName,
-                provider: "Legacy",
-                configuration: nil
-            )
-        } else {
-            self.modelInfo = ModelVersionInfo(
-                modelId: "unknown",
-                displayName: "Unknown",
-                provider: "Unknown",
-                configuration: nil
-            )
-        }
+        // Decode model info with migration support
+        self.modelInfo = decodeModelInfo(
+            from: container,
+            modelInfoKey: .modelInfo,
+            modelNameKey: .modelName
+        )
 
-        // Try to decode prompt info
-        if let promptInfo = try? container.decode(PromptVersionInfo.self, forKey: .promptInfo) {
-            self.promptInfo = promptInfo
-        } else {
-            // Default for migrated data
-            self.promptInfo = PromptVersionInfo(
-                promptId: "default",
-                promptName: "Default",
-                contentPreview: "",
-                category: .asr
-            )
-        }
+        // Decode prompt info with migration support
+        self.promptInfo = decodePromptInfo(
+            from: container,
+            promptInfoKey: .promptInfo,
+            defaultCategory: .asr
+        )
 
         // Version number: use stored or default to 1
         self.versionNumber = try container.decodeIfPresent(Int.self, forKey: .versionNumber) ?? 1
@@ -370,39 +351,77 @@ extension SummaryVersion {
         self.filePath = try container.decode(String.self, forKey: .filePath)
         self.sourceTranscriptId = try container.decode(UUID.self, forKey: .sourceTranscriptId)
 
-        // Migration for model info
-        if let modelInfo = try? container.decode(ModelVersionInfo.self, forKey: .modelInfo) {
-            self.modelInfo = modelInfo
-        } else if let modelName = try? container.decode(String.self, forKey: .modelName) {
-            self.modelInfo = ModelVersionInfo(
-                modelId: "legacy",
-                displayName: modelName,
-                provider: "Legacy",
-                configuration: nil
-            )
-        } else {
-            self.modelInfo = ModelVersionInfo(
-                modelId: "unknown",
-                displayName: "Unknown",
-                provider: "Unknown",
-                configuration: nil
-            )
-        }
+        // Decode model info with migration support
+        self.modelInfo = decodeModelInfo(
+            from: container,
+            modelInfoKey: .modelInfo,
+            modelNameKey: .modelName
+        )
 
-        // Migration for prompt info
-        if let promptInfo = try? container.decode(PromptVersionInfo.self, forKey: .promptInfo) {
-            self.promptInfo = promptInfo
-        } else {
-            self.promptInfo = PromptVersionInfo(
-                promptId: "default",
-                promptName: "Default",
-                contentPreview: "",
-                category: .llm
-            )
-        }
+        // Decode prompt info with migration support
+        self.promptInfo = decodePromptInfo(
+            from: container,
+            promptInfoKey: .promptInfo,
+            defaultCategory: .llm
+        )
 
         self.versionNumber = try container.decodeIfPresent(Int.self, forKey: .versionNumber) ?? 1
         self.sourceTranscriptVersionNumber = try container.decodeIfPresent(Int.self, forKey: .sourceTranscriptVersionNumber) ?? 1
         self.statistics = try container.decodeIfPresent(SummaryStatistics.self, forKey: .statistics)
     }
+}
+
+// MARK: - Decoding Helpers
+
+/// 解码 ModelVersionInfo，支持旧格式迁移
+/// 用于 TranscriptVersion 和 SummaryVersion 的共享解码逻辑
+private func decodeModelInfo<T: CodingKey>(
+    from container: KeyedDecodingContainer<T>,
+    modelInfoKey: T,
+    modelNameKey: T
+) -> ModelVersionInfo {
+    // Try new format first
+    if let modelInfo = try? container.decode(ModelVersionInfo.self, forKey: modelInfoKey) {
+        return modelInfo
+    }
+
+    // Fallback to legacy format (modelName string)
+    guard let modelName = try? container.decode(String.self, forKey: modelNameKey) else {
+        // No model info available - return unknown
+        return ModelVersionInfo(
+            modelId: "unknown",
+            displayName: "Unknown",
+            provider: "Unknown",
+            configuration: nil
+        )
+    }
+
+    // Migrate from old format
+    return ModelVersionInfo(
+        modelId: "legacy",
+        displayName: modelName,
+        provider: "Legacy",
+        configuration: nil
+    )
+}
+
+/// 解码 PromptVersionInfo，支持旧格式迁移
+/// 用于 TranscriptVersion 和 SummaryVersion 的共享解码逻辑
+private func decodePromptInfo<T: CodingKey>(
+    from container: KeyedDecodingContainer<T>,
+    promptInfoKey: T,
+    defaultCategory: PromptCategory
+) -> PromptVersionInfo {
+    // Try new format first
+    if let promptInfo = try? container.decode(PromptVersionInfo.self, forKey: promptInfoKey) {
+        return promptInfo
+    }
+
+    // No prompt info available - return default
+    return PromptVersionInfo(
+        promptId: "default",
+        promptName: "Default",
+        contentPreview: "",
+        category: defaultCategory
+    )
 }

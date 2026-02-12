@@ -50,27 +50,33 @@ final class ServiceContainer {
     // MARK: - Protocol-Based Service Access
 
     /// Recording service (protocol-based access)
-    var recordingService: RecordingServiceProtocol {
+    var recordingService: any RecordingServiceProtocol {
         get { _recordingService ?? RecordingService.shared }
         set { _recordingService = newValue }
     }
 
     /// Detection service (protocol-based access)
-    var detectionService: DetectionServiceProtocol {
+    var detectionService: any DetectionServiceProtocol {
         get { _detectionService ?? DetectionService.shared }
         set { _detectionService = newValue }
     }
 
     /// Metadata manager (protocol-based access)
-    var metadataManager: MetadataManagerProtocol {
+    var metadataManager: any MetadataManagerProtocol {
         get { _metadataManager ?? MetadataManager.shared }
         set { _metadataManager = newValue }
     }
 
     /// Settings manager (protocol-based access)
-    var settingsManager: SettingsManagerProtocol {
+    var settingsManager: any SettingsManagerProtocol {
         get { _settingsManager ?? SettingsManager.shared }
         set { _settingsManager = newValue }
+    }
+
+    /// AI processing coordinator (protocol-based access)
+    var aiProcessingCoordinator: any AIProcessingCoordinatorProtocol {
+        get { _aiProcessingCoordinator ?? AIProcessingCoordinator.shared }
+        set { _aiProcessingCoordinator = newValue }
     }
 
     // MARK: - Test Mode Support
@@ -87,6 +93,9 @@ final class ServiceContainer {
     /// Mock settings manager (for testing)
     private var _settingsManager: (any SettingsManagerProtocol)?
 
+    /// Mock AI processing coordinator (for testing)
+    private var _aiProcessingCoordinator: (any AIProcessingCoordinatorProtocol)?
+
     /// Test mode flag
     private let testMode: Bool
 
@@ -97,7 +106,14 @@ final class ServiceContainer {
         self.testMode = testMode
     }
 
-    // MARK: - Test Factory Method
+    // MARK: - Factory Methods
+
+    /// Creates a container configured for production environment
+    ///
+    /// - Returns: A new ServiceContainer instance with production configuration
+    static func createProductionContainer() -> ServiceContainer {
+        return ServiceContainer(testMode: false)
+    }
 
     /// Creates a container configured for testing
     ///
@@ -145,6 +161,15 @@ final class ServiceContainer {
         _settingsManager = service
     }
 
+    /// Sets a mock AI processing coordinator (test mode only)
+    ///
+    /// - Parameter service: The mock AI processing coordinator
+    /// - Precondition: testMode must be true
+    func setAIProcessingCoordinator(_ service: any AIProcessingCoordinatorProtocol) {
+        precondition(testMode, "Service replacement only allowed in test mode")
+        _aiProcessingCoordinator = service
+    }
+
     // MARK: - Convenience Accessors
 
     /// Shortcut to access recording service via protocol
@@ -190,6 +215,7 @@ final class ServiceContainer {
         _detectionService = nil
         _metadataManager = nil
         _settingsManager = nil
+        _aiProcessingCoordinator = nil
     }
 }
 
@@ -265,9 +291,44 @@ protocol MetadataManagerProtocol: AnyObject {
     func rename(id: UUID, newTitle: String) async
 }
 
+// MARK: - AIProcessingCoordinator Protocol
+
+/// Protocol defining AI processing coordination capabilities
+protocol AIProcessingCoordinatorProtocol: AnyObject, ObservableObject {
+
+    // MARK: - Published State
+    var isProcessing: Bool { get }
+    var currentStage: AIProcessingCoordinator.ProcessingStage { get }
+    var progress: Double { get }
+    var lastError: Error? { get }
+
+    // MARK: - Main Processing Pipeline
+    func process(audioURL: URL, meetingID: UUID) async
+    func processASROnly(audioURL: URL, meetingID: UUID) async -> (text: String?, transcriptURL: URL?)
+    func processASROnlyWithVersion(audioURL: URL, meetingID: UUID) async -> (
+        text: String?,
+        url: URL?,
+        version: TranscriptVersion?
+    )
+
+    // MARK: - Legacy API (Compatibility)
+    func transcribeOnly(audioURL: URL, meetingID: UUID?) async throws -> (String, URL, UUID)
+    func generateSummaryOnly(
+        transcriptText: String,
+        audioURL: URL,
+        sourceTranscriptId: UUID,
+        meetingID: UUID?
+    ) async throws -> (String, URL, UUID)
+}
+
 // MARK: - Convenience Extensions
 
 extension ServiceContainer {
+
+    /// Shortcut to access AI processing coordinator via protocol
+    var aiCoordinator: any AIProcessingCoordinatorProtocol {
+        return aiProcessingCoordinator
+    }
 
     /// Validates and prepares all services for operation
     ///
@@ -282,6 +343,40 @@ extension ServiceContainer {
                 level: .error,
                 message: "[ServiceContainer] Service validation failed: \(error.errorDescription ?? "Unknown")"
             )
+        }
+    }
+
+    /// Configures the container with all mock services (test mode only)
+    ///
+    /// - Parameters:
+    ///   - recordingService: Mock recording service
+    ///   - detectionService: Mock detection service
+    ///   - metadataManager: Mock metadata manager
+    ///   - settingsManager: Mock settings manager
+    ///   - aiCoordinator: Mock AI processing coordinator
+    func configureTestServices(
+        recordingService: (any RecordingServiceProtocol)? = nil,
+        detectionService: (any DetectionServiceProtocol)? = nil,
+        metadataManager: (any MetadataManagerProtocol)? = nil,
+        settingsManager: (any SettingsManagerProtocol)? = nil,
+        aiCoordinator: (any AIProcessingCoordinatorProtocol)? = nil
+    ) {
+        precondition(testMode, "Test service configuration only allowed in test mode")
+
+        if let service = recordingService {
+            _recordingService = service
+        }
+        if let service = detectionService {
+            _detectionService = service
+        }
+        if let service = metadataManager {
+            _metadataManager = service
+        }
+        if let service = settingsManager {
+            _settingsManager = service
+        }
+        if let service = aiCoordinator {
+            _aiProcessingCoordinator = service
         }
     }
 }

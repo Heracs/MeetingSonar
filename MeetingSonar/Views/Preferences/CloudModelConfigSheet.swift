@@ -55,6 +55,20 @@ struct CloudModelConfigSheet: View {
         self.existingConfig = existingConfig
     }
 
+    // MARK: - Computed Properties
+
+    /// Returns a text summary of the current provider's capabilities
+    private var capabilitySummary: String {
+        var capabilities: [String] = []
+        if provider.supportsASR {
+            capabilities.append("语音识别")
+        }
+        if provider.supportsLLM {
+            capabilities.append("语言模型")
+        }
+        return capabilities.isEmpty ? "暂无可用能力" : capabilities.joined(separator: " · ")
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -142,9 +156,10 @@ struct CloudModelConfigSheet: View {
 
                 Picker("", selection: $provider) {
                     ForEach(OnlineServiceProvider.allCases, id: \.self) { p in
-                        HStack(spacing: 4) {
-                            Image(systemName: p.icon)
+                        Label {
                             Text(p.displayName)
+                        } icon: {
+                            Image(systemName: p.icon)
                         }
                         .tag(p)
                     }
@@ -198,15 +213,32 @@ struct CloudModelConfigSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "能力配置", icon: "gearshape.2")
 
-            // Provider capability badges
-            HStack(spacing: 12) {
-                ForEach(OnlineServiceProvider.allCases, id: \.self) { p in
-                    ProviderCapabilityBadge(
-                        provider: p,
-                        isSelected: provider == p
-                    )
+            // Current provider capability badge - shows only the selected provider
+            HStack(spacing: 16) {
+                ProviderCapabilityBadge(
+                    provider: provider,
+                    isSelected: true
+                )
+
+                Spacer()
+
+                // Provider info text
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(provider.displayName)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    Text(capabilitySummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(0.1))
+            )
 
             Divider()
 
@@ -401,6 +433,15 @@ struct CloudModelConfigSheet: View {
                     apiKey = key
                 }
             }
+        }
+
+        // Fix: Ensure baseURL matches the provider's default after loading
+        // This handles the case where the stored config has a different provider
+        // and we need to synchronize the baseURL accordingly
+        if baseURL == config.provider.defaultBaseURL {
+            // If the stored baseURL matches the stored provider's default,
+            // update it to match the current provider's default
+            baseURL = provider.defaultBaseURL
         }
     }
 

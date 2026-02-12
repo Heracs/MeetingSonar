@@ -437,6 +437,10 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        // Capture provider info for closure to avoid potential retain cycles
+        let providerDisplayName = self.provider.displayName
+        let providerBaseURL = self.baseURL
+
         return AsyncStream { continuation in
             Task {
                 do {
@@ -453,7 +457,7 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
                             data.append(byte)
                         }
                         LoggerService.shared.log(category: .ai, level: .error, message: """
-                        [\(self.provider.displayName)] API Response (Stream):
+                        [\(providerDisplayName)] API Response (Stream):
                         ├─ Status Code: \(httpResponse.statusCode)
                         ├─ Body:
                         │  └─ Error: \(String(data: data, encoding: .utf8) ?? "N/A")

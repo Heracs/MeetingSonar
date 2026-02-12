@@ -513,13 +513,7 @@ struct DetailView: View {
                 Button(action: {
                     withAnimation {
                         showSourceTranscript.toggle()
-
-                        if showSourceTranscript,
-                           let currentSummaryID = selectedSummaryVersionID,
-                           let sv = meta.summaryVersions.first(where: { $0.id == currentSummaryID }),
-                           selectedTranscriptVersionID != sv.sourceTranscriptId {
-                            selectedTranscriptVersionID = sv.sourceTranscriptId
-                        }
+                        syncTranscriptToSummarySource()
                     }
                 }) {
                     HStack(spacing: 4) {
@@ -546,11 +540,18 @@ struct DetailView: View {
                 .font(.title3)
                 .foregroundColor(.secondary)
 
-            Text(enableStreamingSummary ? "点击上方「生成纪要」按钮开始流式生成" : "点击上方「处理」按钮生成纪要")
+            Text(emptySummaryInstructionText)
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 空摘要状态下的提示文本
+    private var emptySummaryInstructionText: String {
+        enableStreamingSummary
+            ? "点击上方「生成纪要」按钮开始流式生成"
+            : "点击上方「处理」按钮生成纪要"
     }
 
     // MARK: - Status Badge
@@ -814,30 +815,11 @@ struct DetailView: View {
 
     private func loadLegacyTranscript(meta: MeetingMeta) {
         let basename = (meta.filename as NSString).deletingPathExtension
-        let transcriptsDir = PathManager.shared.transcriptsURL
-        let cleansedDir = transcriptsDir.appendingPathComponent("Cleansed")
-        let rawDir = transcriptsDir.appendingPathComponent("Raw")
+        let candidates = buildLegacyTranscriptCandidates(basename: basename)
 
-        var candidates: [URL] = []
-
-        candidates.append(rawDir.appendingPathComponent("\(basename)_transcript.json"))
-
-        if let files = try? FileManager.default.contentsOfDirectory(at: rawDir, includingPropertiesForKeys: nil) {
-            let matchingFiles = files.filter { url in
-                let name = url.deletingPathExtension().lastPathComponent
-                return name.hasPrefix("\(basename)_transcript")
-            }.sorted { $0.lastPathComponent > $1.lastPathComponent }
-            candidates.append(contentsOf: matchingFiles)
-        }
-
-        candidates.append(cleansedDir.appendingPathComponent("\(basename).json"))
-        candidates.append(rawDir.appendingPathComponent("\(basename).json"))
-
+        // Try to load from each candidate
         for url in candidates {
-            if FileManager.default.fileExists(atPath: url.path),
-               let data = try? Data(contentsOf: url),
-               let model = try? JSONDecoder().decode(TranscriptModel.self, from: data) {
-                self.transcriptSegments = model.segments
+            if loadTranscriptFrom(url: url) {
                 LoggerService.shared.log(
                     category: .ai,
                     message: "[DetailView] Loaded legacy transcript: \(url.lastPathComponent)"
@@ -851,6 +833,48 @@ struct DetailView: View {
             level: .error,
             message: "[DetailView] Failed to load legacy transcript for \(basename). Tried \(candidates.count) candidates."
         )
+    }
+
+    /// 构建旧版转录文件的候选列表
+    private func buildLegacyTranscriptCandidates(basename: String) -> [URL] {
+        let transcriptsDir = PathManager.shared.transcriptsURL
+        let cleansedDir = transcriptsDir.appendingPathComponent("Cleansed")
+        let rawDir = transcriptsDir.appendingPathComponent("Raw")
+
+        var candidates: [URL] = []
+
+        // Add standard transcript file
+        candidates.append(rawDir.appendingPathComponent("\(basename)_transcript.json"))
+        candidates.append(cleansedDir.appendingPathComponent("\(basename).json"))
+        candidates.append(rawDir.appendingPathComponent("\(basename).json"))
+
+        // Add matching files from Raw directory
+        if let files = try? FileManager.default.contentsOfDirectory(at: rawDir, includingPropertiesForKeys: nil) {
+            let matchingFiles = files.filter { url in
+                let name = url.deletingPathExtension().lastPathComponent
+                return name.hasPrefix("\(basename)_transcript")
+            }.sorted { $0.lastPathComponent > $1.lastPathComponent }
+            candidates.append(contentsOf: matchingFiles)
+        }
+
+        return candidates
+    }
+
+    /// 从指定 URL 加载转录数据
+    /// - Parameter url: 文件 URL
+    /// - Returns: 是否加载成功
+    private func loadTranscriptFrom(url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return false
+        }
+
+        guard let data = try? Data(contentsOf: url),
+              let model = try? JSONDecoder().decode(TranscriptModel.self, from: data) else {
+            return false
+        }
+
+        self.transcriptSegments = model.segments
+        return true
     }
 
     private func loadSummary(for id: UUID) {
@@ -933,13 +957,21 @@ struct DetailView: View {
 
     private func handleSummaryVersionChanged(to newID: UUID?) {
         loadSummary(for: recordingID)
+        syncTranscriptToSummarySource()
+    }
 
-        if showSourceTranscript,
-           let meta = manager.get(id: recordingID),
-           let sv = meta.summaryVersions.first(where: { $0.id == newID }),
-           selectedTranscriptVersionID != sv.sourceTranscriptId {
-            selectedTranscriptVersionID = sv.sourceTranscriptId
+    /// 同步转录版本到摘要来源
+    ///
+    /// 当显示来源转录且摘要版本变化时，自动选择对应的转录版本
+    private func syncTranscriptToSummarySource() {
+        guard showSourceTranscript,
+              let meta = manager.get(id: recordingID),
+              let currentSummaryID = selectedSummaryVersionID,
+              let sv = meta.summaryVersions.first(where: { $0.id == currentSummaryID }),
+              selectedTranscriptVersionID != sv.sourceTranscriptId else {
+            return
         }
+        selectedTranscriptVersionID = sv.sourceTranscriptId
     }
 
     // MARK: - Alert Actions

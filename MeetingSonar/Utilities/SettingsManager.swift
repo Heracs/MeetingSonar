@@ -172,12 +172,19 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         let defaultAutoConfig = AudioSourceConfig.default
         let defaultManualConfig = AudioSourceConfig.systemOnly
 
-        if let autoData = try? JSONEncoder().encode(defaultAutoConfig),
-           let manualData = try? JSONEncoder().encode(defaultManualConfig) {
+        do {
+            let autoData = try JSONEncoder().encode(defaultAutoConfig)
+            let manualData = try JSONEncoder().encode(defaultManualConfig)
             defaults.register(defaults: [
                 Keys.autoRecordingDefaultConfig: autoData,
                 Keys.manualRecordingDefaultConfig: manualData
             ])
+        } catch {
+            // This should never happen with well-formed Codable types
+            LoggerService.shared.log(category: .general, level: .error, message: """
+                [Settings] Failed to encode default scenario configs: \(error.localizedDescription)
+                This indicates a bug in AudioSourceConfig's Codable implementation.
+                """)
         }
     }
     
@@ -221,7 +228,14 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
             }
             
             // 3. Fallback to Sandbox Documents (Default)
-            return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            // Use force unwrap with safety guarantee: FileManager always returns at least one URL for documentDirectory
+            let documentURLs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+            guard let fallbackURL = documentURLs.first else {
+                LoggerService.shared.log(category: .general, level: .error, message: "[Settings] Failed to get document directory from FileManager")
+                // Last resort: create a path in home directory
+                return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+            }
+            return fallbackURL
         }
         set {
             // Validate path before accepting it
@@ -244,7 +258,10 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
             securityScopedURL = nil
 
             // Create and save bookmark coverage for new path
-            saveBookmark(for: newValue)
+            let bookmarkSaved = saveBookmark(for: newValue)
+            if !bookmarkSaved {
+                LoggerService.shared.log(category: .general, level: .warning, message: "[Settings] Path was accepted but bookmark save failed, security-scoped access may not persist across app restarts")
+            }
 
             // Start accessing new resource (if applicable)
             if newValue.startAccessingSecurityScopedResource() {
@@ -256,14 +273,20 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         }
     }
     
-    private func saveBookmark(for url: URL) {
+    /// Save bookmark for a URL with error handling
+    /// - Parameter url: The URL to create a bookmark for
+    /// - Returns: `true` if bookmark was saved successfully, `false` otherwise
+    private func saveBookmark(for url: URL) -> Bool {
         do {
             let data = try url.bookmarkData(options: .withSecurityScope,
                                             includingResourceValuesForKeys: nil,
                                             relativeTo: nil)
             defaults.set(data, forKey: Keys.savePathBookmark)
+            LoggerService.shared.log(category: .general, level: .debug, message: "[Settings] Bookmark saved successfully for: \(url.path)")
+            return true
         } catch {
-            LoggerService.shared.log(category: .general, level: .error, message: "Failed to create bookmark: \(error)")
+            LoggerService.shared.log(category: .general, level: .error, message: "[Settings] Failed to create bookmark for \(url.path): \(error.localizedDescription)")
+            return false
         }
     }
     
@@ -463,24 +486,39 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
     @Published var launchAtLogin: Bool = false {
         didSet {
             defaults.set(launchAtLogin, forKey: Keys.launchAtLogin)
-            updateLaunchAtLoginStatus()
+            let success = updateLaunchAtLoginStatus()
+
+            if !success {
+                LoggerService.shared.log(category: .general, level: .warning, message: """
+                    [Settings] Failed to update launch at login status.
+                    UI shows \(launchAtLogin ? "enabled" : "disabled") but system state may differ.
+                    User may need to check System Settings > General > Login Items.
+                    """)
+            }
         }
     }
     
     /// Register or unregister launch at login using SMAppService (macOS 13+)
-    private func updateLaunchAtLoginStatus() {
+    /// - Returns: `true` if the operation succeeded, `false` otherwise
+    @discardableResult
+    private func updateLaunchAtLoginStatus() -> Bool {
         if #available(macOS 13.0, *) {
             let service = SMAppService.mainApp
             do {
                 if launchAtLogin {
                     try service.register()
+                    LoggerService.shared.log(category: .general, level: .info, message: "[Settings] Launch at login enabled successfully")
                 } else {
                     try service.unregister()
+                    LoggerService.shared.log(category: .general, level: .info, message: "[Settings] Launch at login disabled successfully")
                 }
+                return true
             } catch {
-                LoggerService.shared.log(category: .general, level: .error, message: "Failed to update launch at login: \(error)")
+                LoggerService.shared.log(category: .general, level: .error, message: "[Settings] Failed to update launch at login: \(error.localizedDescription)")
+                return false
             }
         }
+        return false
     }
     
     /// Load launch at login state from system
@@ -583,15 +621,36 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
     ///
     /// - Parameter appName: Optional application name for the filename
     /// - Returns: A validated URL within the configured save path
+    /// - Important: This method will always return a valid URL. If path validation fails,
+    ///             it falls back to standard path component appending (which is safe against traversal).
     func generateFileURL(appName: String? = nil) -> URL {
         let filename = generateFilename(appName: appName)
 
         do {
             return try PathValidator.safeAppendingPathComponent(to: savePath, component: filename)
         } catch {
-            LoggerService.shared.log(category: .general, level: .error, message: "[Settings] Failed to generate file URL: \(error.localizedDescription)")
-            // Fallback to unsafe construction
-            return savePath.appendingPathComponent(filename)
+            LoggerService.shared.log(category: .general, level: .warning, message: """
+                [Settings] Path validator failed, using fallback: \(error.localizedDescription)
+                Filename: \(filename)
+                """)
+            // Fallback: URL.appendingPathComponent is safe against path traversal attacks
+            // as it treats the input as a single path component, not a full path
+            let fallbackURL = savePath.appendingPathComponent(filename)
+
+            // Additional safety check: ensure the result is still within savePath
+            if fallbackURL.path.hasPrefix(savePath.path) {
+                return fallbackURL
+            } else {
+                // Should never happen, but if it does, use Documents as last resort
+                LoggerService.shared.log(category: .general, level: .error, message: """
+                    [Settings] Fallback URL is outside save path, using Documents directory
+                    Fallback: \(fallbackURL.path)
+                    Save path: \(savePath.path)
+                    """)
+                let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+                return documentsURL.appendingPathComponent(filename)
+            }
         }
     }
 }

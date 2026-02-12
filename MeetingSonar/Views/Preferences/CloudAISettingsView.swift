@@ -149,7 +149,7 @@ struct CloudAISettingsView: View {
 
     // MARK: - Streaming Toggle Section (v1.1.0)
 
-    @AppStorage("enableStreamingSummary") private var enableStreamingSummary: Bool = true
+    @AppStorage("enableStreamingSummary") private var enableStreamingSummary: Bool = false
 
     private var streamingToggleSection: some View {
         HStack(spacing: 12) {
@@ -173,6 +173,13 @@ struct CloudAISettingsView: View {
             Toggle("", isOn: $enableStreamingSummary)
                 .toggleStyle(.switch)
                 .labelsHidden()
+                .onChange(of: enableStreamingSummary) { newValue in
+                    LoggerService.shared.log(
+                        category: .general,
+                        level: .info,
+                        message: "[Settings] Streaming summary enabled: \(newValue)"
+                    )
+                }
         }
         .padding()
         .background(Color(nsColor: .controlBackgroundColor))
