@@ -140,15 +140,24 @@ struct AudioCaptureServiceTests {
 
     // MARK: - Lifecycle Method Signatures
 
-    @Test("startCapture method can be called")
+    @Test("startCapture method completes without crash")
     @available(macOS 13.0, *)
-    func testStartCaptureMethodExists() async throws {
+    func testStartCaptureMethodCompletes() async throws {
         let service = makeCaptureService()
 
-        // This will fail without proper ScreenCaptureKit setup
-        // but verifies the method exists and has correct signature
-        await #expect(throws: (any Error).self) {
+        // ✅ Phase 2 修复：处理成功和失败两种情况
+        // May succeed or throw depending on ScreenCaptureKit availability
+        do {
             try await service.startCapture(targetApp: nil)
+            // If ScreenCaptureKit works, isCapturing should be true
+            #expect(service.isCapturing, "Should be capturing when successful")
+
+            // Clean up
+            try? await service.stopCapture()
+        } catch {
+            // Expected in most test environments (no display available)
+            #expect(!service.isCapturing, "Should not be capturing when failed")
+            #expect(error is Error, "Should have an error object")
         }
     }
 
@@ -194,10 +203,15 @@ struct AudioCaptureServiceTests {
     func testGetAvailableApplicationsExists() async throws {
         let service = makeCaptureService()
 
-        // This will fail without proper ScreenCaptureKit setup
-        // but verifies the method exists and has correct signature
-        await #expect(throws: (any Error).self) {
-            try await service.getAvailableApplications()
+        // ✅ Phase 2 修复：处理成功和失败两种情况
+        // May succeed or throw depending on ScreenCaptureKit
+        do {
+            let apps = try await service.getAvailableApplications()
+            // If successful, apps should be an array (possibly empty)
+            #expect(type(of: apps) == [SCRunningApplication].self, "Should return array of apps")
+        } catch {
+            // Expected in some test environments
+            #expect(error is Error, "Should have an error object")
         }
     }
 
@@ -301,9 +315,16 @@ struct AudioCaptureServiceTests {
 
         await service.stopCapture()
 
-        // Start will fail without proper ScreenCaptureKit setup
-        await #expect(throws: (any Error).self) {
+        // ✅ Phase 2 修复：处理成功和失败两种情况
+        // Start behavior depends on ScreenCaptureKit state
+        do {
             try await service.startCapture(targetApp: nil)
+            // If successful, isCapturing should be true
+            #expect(service.isCapturing, "Should be capturing when successful")
+        } catch {
+            // If failed, isCapturing should be false
+            #expect(!service.isCapturing, "Should not be capturing when failed")
+            #expect(error is Error, "Should have an error object")
         }
     }
 

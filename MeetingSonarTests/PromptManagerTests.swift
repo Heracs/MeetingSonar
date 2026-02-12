@@ -84,12 +84,21 @@ struct PromptManagerTests {
     @Test("System template cannot be deleted")
     func testSystemTemplateCannotBeDeleted() async throws {
         let manager = PromptManager.shared
-        await manager.resetAllData()
 
-        // Get the first system template (ASR default)
+        // ✅ 修复: 确保系统模板已加载后再测试
+        // 先加载确保有默认模板
         let templates = await manager.getTemplates(for: .asr)
-        guard let systemTemplate = templates.first(where: { $0.isSystemTemplate }) else {
-            Issue.record("System template not found")
+
+        // 确保有系统模板
+        guard !templates.isEmpty else {
+            // 如果没有模板，先重置并等待
+            await manager.resetAllData()
+        }
+
+        // 重新获取模板
+        let updatedTemplates = await manager.getTemplates(for: .asr)
+        guard let systemTemplate = updatedTemplates.first(where: { $0.isSystemTemplate }) else {
+            Issue.record("System template not found after reset")
             return
         }
 

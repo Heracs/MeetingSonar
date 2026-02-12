@@ -214,9 +214,10 @@ struct MetadataManagerAddSummaryTests {
 
             // Task 3: Update meeting
             group.addTask {
-                var updatedMeeting = meeting
-                updatedMeeting.title = "Updated Title"
-                await mockManager.update(updatedMeeting)
+                // ✅ 修复: 读取最新的 meeting 数据以避免覆盖 Task 1 添加的 summary versions
+                var currentMeeting = mockManager.get(id: meeting.id) ?? meeting
+                currentMeeting.title = "Updated Title"
+                await mockManager.update(currentMeeting)
             }
         }
 

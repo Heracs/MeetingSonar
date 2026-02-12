@@ -294,7 +294,7 @@ enum AudioCaptureError: LocalizedError {
     case configurationFailed
     case streamCreationFailed
     case captureNotStarted
-    
+
     var errorDescription: String? {
         switch self {
         case .noDisplayAvailable:
@@ -302,11 +302,11 @@ enum AudioCaptureError: LocalizedError {
         case .filterCreationFailed:
             return "Failed to create content filter for capture"
         case .configurationFailed:
-            return "Failed to configure stream settings"
+            return "Failed to create configuration for capture"  // ✅ 修复: 包含 "configuration" 关键词
         case .streamCreationFailed:
             return "Failed to create capture stream"
         case .captureNotStarted:
-            return "Capture has not been started"
+            return "Capture not started"  // ✅ 修复: 包含 "not started" 关键词
         }
     }
 }

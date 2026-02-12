@@ -70,6 +70,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.selectedUnifiedASRId = "test-asr-model"
         mockSettings.selectedUnifiedLLMId = "test-llm-model"
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         // Setup meeting metadata
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
@@ -121,6 +125,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = "test-asr-model"
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -166,6 +174,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = ""  // Empty model ID
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -176,7 +188,9 @@ struct AIProcessingCoordinatorIntegrationTests {
         )
         await mockMetadata.add(meeting)
 
+        // ✅ Phase 3 修复: 提供实际的错误对象
         mockCoordinator.shouldThrowASRError = true
+        mockCoordinator.mockASRError = AIProcessingError.notImplemented("No ASR model configured")
 
         // Act
         await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
@@ -203,6 +217,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedLLMId = "non-existent-model-id"
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -215,6 +233,7 @@ struct AIProcessingCoordinatorIntegrationTests {
 
         mockCoordinator.mockTranscriptResult = sampleTranscriptText
         mockCoordinator.shouldThrowLLMError = true
+        mockCoordinator.mockLLMError = AIProcessingError.notImplemented("No LLM model configured")
         mockCoordinator.noLLMFallbackAvailable = true
 
         // Act
@@ -242,6 +261,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockMetadata.configureForTesting()
         mockSettings.configureForTesting()
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -252,7 +275,9 @@ struct AIProcessingCoordinatorIntegrationTests {
         )
         await mockMetadata.add(meeting)
 
+        // ✅ Phase 3 修复: 提供实际的错误对象
         mockCoordinator.shouldThrowASRError = true
+        mockCoordinator.mockASRError = AIProcessingError.notImplemented("ASR processing failed")
 
         // Act
         await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
@@ -276,6 +301,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = "test-asr-model"
         mockSettings.selectedUnifiedLLMId = "test-llm-model"
+
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
 
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
@@ -324,6 +353,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.selectedUnifiedASRId = "test-asr-model"
         mockSettings.selectedUnifiedLLMId = "test-llm-model"
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -368,6 +401,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = "test-asr-model"
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -408,6 +445,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = "test-asr-model"
         mockSettings.selectedUnifiedLLMId = "test-llm-model"
+
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
 
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
@@ -473,6 +514,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = "custom-asr-model-id"
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -507,6 +552,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.selectedUnifiedASRId = "test-asr-model"
         mockSettings.selectedUnifiedLLMId = "custom-llm-model-id"
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -540,6 +589,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = "test-asr-model"
         mockSettings.selectedUnifiedLLMId = "test-llm-model"
+
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
 
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
@@ -577,6 +630,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockSettings.selectedUnifiedASRId = "test-asr-model"
         mockSettings.selectedUnifiedLLMId = "test-llm-model"
 
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
+
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
             filename: "test_audio.m4a",
@@ -613,6 +670,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockMetadata.configureForTesting()
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = "test-asr-model"
+
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
 
         let meetingID1 = UUID()
         let meetingID2 = UUID()
@@ -671,6 +732,10 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockMetadata.configureForTesting()
         mockSettings.configureForTesting()
         mockSettings.selectedUnifiedASRId = "test-asr-model"
+
+        // ✅ Phase 1 修复: 注入依赖到 MockAIProcessingCoordinator
+        mockCoordinator.metadataManager = mockMetadata
+        mockCoordinator.settingsManager = mockSettings
 
         var meeting = SampleData.createMeetingMeta(
             id: testMeetingID,
@@ -734,6 +799,14 @@ class MockAIProcessingCoordinator: ObservableObject {
     @Published var progress: Double = 0
     @Published var lastError: Error?
 
+    // MARK: - Dependency Injection
+
+    /// 注入的 MetadataManager - 用于持久化处理结果
+    weak var metadataManager: MockMetadataManager?
+
+    /// 注入的 SettingsManager - 用于获取当前配置的模型 ID
+    weak var settingsManager: MockSettingsManager?
+
     // MARK: - Mock Configuration
 
     var mockTranscriptResult: String = ""
@@ -778,6 +851,11 @@ class MockAIProcessingCoordinator: ObservableObject {
             asrServiceCalled = true
             lastASRMeetingID = meetingID
 
+            // ✅ Phase 1 修复: 跟踪使用的 ASR 模型 ID
+            if let settingsManager = settingsManager {
+                lastUsedASRModelID = settingsManager.selectedUnifiedASRId
+            }
+
             if shouldThrowASRError {
                 if let error = mockASRError {
                     throw error
@@ -796,10 +874,57 @@ class MockAIProcessingCoordinator: ObservableObject {
             progress = 0.5
             onProgressUpdate?(0.5)
 
+            // ✅ Phase 1 修复: 创建并持久化 TranscriptVersion 到 MetadataManager
+            // ✅ Phase 3 修复: 检查是否已有 transcript version，如果有则重用
+            var transcriptVersion: TranscriptVersion
+            var transcriptVersionID: UUID
+
+            if let metadataManager = metadataManager,
+               let meeting = metadataManager.get(id: meetingID),
+               !meeting.transcriptVersions.isEmpty {
+                // 重用已存在的 transcript version
+                transcriptVersion = meeting.transcriptVersions[0]
+                transcriptVersionID = transcriptVersion.id
+            } else {
+                // 创建新的 transcript version
+                transcriptVersion = TranscriptVersion(
+                    id: UUID(),
+                    versionNumber: 1,
+                    timestamp: Date(),
+                    modelInfo: ModelVersionInfo(
+                        modelId: "mock-asr",
+                        displayName: mockASRModelName,
+                        provider: "Mock"
+                    ),
+                    promptInfo: PromptVersionInfo(
+                        promptId: "default",
+                        promptName: "Default",
+                        contentPreview: "",
+                        category: .asr
+                    ),
+                    filePath: "Transcripts/Raw/test_transcript_v1_20240121-140000.json"
+                )
+
+                // 保存 ID 以供 SummaryVersion 使用
+                transcriptVersionID = transcriptVersion.id
+
+                if let metadataManager = metadataManager,
+                   let meeting = metadataManager.get(id: meetingID) {
+                    var updated = meeting
+                    updated.transcriptVersions.append(transcriptVersion)
+                    await metadataManager.update(updated)
+                }
+            }
+
             // Stage 3: LLM
             currentStage = .llm
             onStageChange?(.llm)
             llmServiceCalled = true
+
+            // ✅ Phase 1 修复: 跟踪使用的 LLM 模型 ID
+            if let settingsManager = settingsManager {
+                lastUsedLLMModelID = settingsManager.selectedUnifiedLLMId
+            }
 
             if shouldThrowLLMError {
                 if let error = mockLLMError {
@@ -822,10 +947,39 @@ class MockAIProcessingCoordinator: ObservableObject {
             progress = 1.0
             onProgressUpdate?(1.0)
 
+            // ✅ Phase 1 修复: 创建并持久化 SummaryVersion 到 MetadataManager
+            let summaryVersion = SummaryVersion(
+                id: UUID(),
+                versionNumber: 1,
+                timestamp: Date(),
+                modelInfo: ModelVersionInfo(
+                    modelId: "mock-llm",
+                    displayName: mockLLMModelName,
+                    provider: "Mock"
+                ),
+                promptInfo: PromptVersionInfo(
+                    promptId: "default",
+                    promptName: "Default",
+                    contentPreview: "",
+                    category: .llm
+                ),
+                filePath: "SmartNotes/test_summary_v1_20240121-140000.md",
+                sourceTranscriptId: transcriptVersionID,
+                sourceTranscriptVersionNumber: 1
+            )
+
+            // 持久化到 MetadataManager
+            if let metadataManager = metadataManager,
+               let meeting = metadataManager.get(id: meetingID) {
+                var updated = meeting
+                updated.summaryVersions.append(summaryVersion)
+                updated.status = .completed
+                await metadataManager.update(updated)
+            }
+
             // Completed
             currentStage = .completed
             onStageChange?(.completed)
-
         } catch {
             lastError = error
             currentStage = .failed(error.localizedDescription)
@@ -833,7 +987,7 @@ class MockAIProcessingCoordinator: ObservableObject {
         }
 
         isProcessing = false
-    }
+        }
 
     func processASROnly(audioURL: URL, meetingID: UUID) async -> (text: String?, transcriptURL: URL?) {
         let result = await processASROnlyWithVersion(audioURL: audioURL, meetingID: meetingID)
@@ -854,6 +1008,11 @@ class MockAIProcessingCoordinator: ObservableObject {
             onStageChange?(.asr)
             asrServiceCalled = true
             lastASRMeetingID = meetingID
+
+            // ✅ Phase 1 修复: 跟踪使用的 ASR 模型 ID
+            if let settingsManager = settingsManager {
+                lastUsedASRModelID = settingsManager.selectedUnifiedASRId
+            }
 
             if shouldThrowASRError, let error = mockASRError {
                 throw error
@@ -891,6 +1050,16 @@ class MockAIProcessingCoordinator: ObservableObject {
                 filePath: "Transcripts/Raw/test_transcript_v1_20240121-140000.json"
             )
 
+            // ✅ Phase 1 修复: 持久化 TranscriptVersion 到 MetadataManager
+            if let metadataManager = metadataManager,
+               let meeting = metadataManager.get(id: meetingID) {
+                var updated = meeting
+                updated.transcriptVersions.append(version)
+                await metadataManager.update(updated)
+            }
+
+            // ✅ Phase 3 修复: 确保成功路径也重置 isProcessing 标志
+            isProcessing = false
             return (mockTranscriptResult, audioURL, version)
 
         } catch {

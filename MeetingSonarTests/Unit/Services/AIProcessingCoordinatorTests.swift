@@ -120,6 +120,9 @@ struct AIProcessingCoordinatorTests {
     func testInitialState() {
         let coordinator = AIProcessingCoordinator.shared
 
+        // ✅ 修复: 重置单例状态以测试真正的初始状态
+        coordinator.reset()
+
         #expect(!coordinator.isProcessing)
         #expect(coordinator.currentStage == .idle)
         #expect(coordinator.progress == 0)
