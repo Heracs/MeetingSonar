@@ -7,6 +7,20 @@
 
 import Foundation
 
+/// GLM-ASR-2512 API constraints
+/// Docs: https://open.bigmodel.cn/dev/api/audio/asr
+/// These limits are enforced by the Zhipu API server; exceeding them returns errors.
+enum ZhipuASRLimits {
+    /// Max audio duration per request (seconds). Longer audio must be split into chunks.
+    static let maxChunkDuration: TimeInterval = 30
+    /// Max file size per request (bytes). ~25MB for WAV at 16kHz mono.
+    static let maxFileSize: Int = 25 * 1024 * 1024
+    /// Max number of hotwords per request. Comma-separated in the "hotwords" form field.
+    static let maxHotwords: Int = 100
+    /// Max prompt length (characters). Used for context priming / domain hints.
+    static let maxPromptLength: Int = 8000
+}
+
 /// 智谱 AI 服务提供商
 actor ZhipuServiceProvider: CloudServiceProvider {
 
@@ -53,7 +67,8 @@ actor ZhipuServiceProvider: CloudServiceProvider {
     func transcribe(
         audioData: Data,
         model: String,
-        prompt: String?
+        prompt: String?,
+        hotwords: [String]? = nil
     ) async throws -> CloudTranscriptionResult {
         let endpoint = "\(baseURL)/audio/transcriptions"
         guard let url = URL(string: endpoint) else {
@@ -72,7 +87,8 @@ actor ZhipuServiceProvider: CloudServiceProvider {
         └─ Body:
            ├─ Model: \(model)
            ├─ Audio Size: \(String(format: "%.2f", Double(audioData.count) / 1024 / 1024)) MB
-           └─ Prompt: \(prompt.map { truncateContent($0) } ?? "N/A")
+           ├─ Prompt: \(prompt.map { truncateContent($0) } ?? "N/A")
+           └─ Hotwords: \(hotwords.map { "\($0.count) words" } ?? "N/A")
         """)
 
         // 构建 multipart/form-data 请求
@@ -95,6 +111,15 @@ actor ZhipuServiceProvider: CloudServiceProvider {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
             body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8)!)
             body.append("\(prompt)\r\n".data(using: .utf8)!)
+        }
+
+        // 添加热词（如果有），逗号分隔，上限 ZhipuASRLimits.maxHotwords
+        if let hotwords = hotwords, !hotwords.isEmpty {
+            let truncated = Array(hotwords.prefix(ZhipuASRLimits.maxHotwords))
+            let joined = truncated.joined(separator: ",")
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"hotwords\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(joined)\r\n".data(using: .utf8)!)
         }
 
         // 添加音频文件
@@ -159,10 +184,11 @@ actor ZhipuServiceProvider: CloudServiceProvider {
         audioData: Data,
         model: String,
         prompt: String?,
+        hotwords: [String]? = nil,
         onProgress: (Double) -> Void
     ) async throws -> CloudTranscriptionResult {
         onProgress(0.5)
-        let result = try await transcribe(audioData: audioData, model: model, prompt: prompt)
+        let result = try await transcribe(audioData: audioData, model: model, prompt: prompt, hotwords: hotwords)
         onProgress(1.0)
         return result
     }

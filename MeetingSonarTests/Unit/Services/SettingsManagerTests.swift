@@ -288,47 +288,30 @@ struct SettingsManagerTests {
 
     // MARK: - Transcripts Settings Tests
 
-    @Test("Auto-generate summary setting persists")
-    func testAutoGenerateSummaryPersistence() async throws {
+    @Test("Auto processing mode persists (F-0.10.4)")
+    func testAutoProcessingModePersistence() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
 
             // Save original value
-            let original = settings.autoGenerateSummary
+            let original = settings.autoProcessingMode
 
-            // Test toggling
-            settings.autoGenerateSummary = false
-            #expect(UserDefaults.standard.bool(forKey: "autoGenerateSummary") == false)
-
-            settings.autoGenerateSummary = true
-            #expect(UserDefaults.standard.bool(forKey: "autoGenerateSummary") == true)
-
-            // Restore original
-            settings.autoGenerateSummary = original
-        }
-    }
-
-    @Test("Transcript language setting persists")
-    func testTranscriptLanguagePersistence() async throws {
-        await MainActor.run {
-            let settings = SettingsManager.shared
-
-            // Save original value
-            let original = settings.transcriptLanguage
-
-            // Test each language option
-            for language in ["auto", "en", "zh"] {
-                settings.transcriptLanguage = language
+            // Test each mode
+            for mode in [AutoProcessingMode.none, .transcriptionOnly, .full] {
+                settings.autoProcessingMode = mode
 
                 // Verify it persisted
-                let savedValue = UserDefaults.standard.string(forKey: "transcriptLanguage")
-                #expect(savedValue == language)
+                let rawValue = UserDefaults.standard.string(forKey: "autoProcessingMode")
+                #expect(rawValue == mode.rawValue)
             }
 
             // Restore original
-            settings.transcriptLanguage = original
+            settings.autoProcessingMode = original
         }
     }
+
+    // NOTE: testTranscriptLanguagePersistence removed in F-0.10.1
+    // Transcript language picker was removed from UI
 
     // MARK: - Recording Scenario Configuration Tests
 
@@ -724,5 +707,115 @@ struct SettingsManagerTests {
 
         // All raw values should be unique
         #expect(rawValues.count == Set(rawValues).count)
+    }
+
+    // MARK: - F-0.10.2: Unified Teams Detection Tests
+
+    @Test("detectTeams setter syncs both Classic and New flags to true")
+    func testDetectTeamsSetterEnablesBoth() async throws {
+        await MainActor.run {
+            let settings = SettingsManager.shared
+
+            // Save original values
+            let originalClassic = settings.detectTeamsClassic
+            let originalNew = settings.detectTeamsNew
+
+            // Set unified property to true
+            settings.detectTeams = true
+
+            // Both should be true
+            #expect(settings.detectTeamsClassic == true)
+            #expect(settings.detectTeamsNew == true)
+
+            // Restore originals
+            settings.detectTeamsClassic = originalClassic
+            settings.detectTeamsNew = originalNew
+        }
+    }
+
+    @Test("detectTeams setter syncs both Classic and New flags to false")
+    func testDetectTeamsSetterDisablesBoth() async throws {
+        await MainActor.run {
+            let settings = SettingsManager.shared
+
+            // Save original values
+            let originalClassic = settings.detectTeamsClassic
+            let originalNew = settings.detectTeamsNew
+
+            // Set unified property to false
+            settings.detectTeams = false
+
+            // Both should be false
+            #expect(settings.detectTeamsClassic == false)
+            #expect(settings.detectTeamsNew == false)
+
+            // Restore originals
+            settings.detectTeamsClassic = originalClassic
+            settings.detectTeamsNew = originalNew
+        }
+    }
+
+    @Test("detectTeams getter returns true if either Classic or New is enabled (OR logic)")
+    func testDetectTeamsGetterORLogic() async throws {
+        await MainActor.run {
+            let settings = SettingsManager.shared
+
+            // Save original values
+            let originalClassic = settings.detectTeamsClassic
+            let originalNew = settings.detectTeamsNew
+
+            // Test case 1: Classic=true, New=false -> should return true
+            settings.detectTeamsClassic = true
+            settings.detectTeamsNew = false
+            #expect(settings.detectTeams == true)
+
+            // Test case 2: Classic=false, New=true -> should return true
+            settings.detectTeamsClassic = false
+            settings.detectTeamsNew = true
+            #expect(settings.detectTeams == true)
+
+            // Test case 3: Both false -> should return false
+            settings.detectTeamsClassic = false
+            settings.detectTeamsNew = false
+            #expect(settings.detectTeams == false)
+
+            // Test case 4: Both true -> should return true
+            settings.detectTeamsClassic = true
+            settings.detectTeamsNew = true
+            #expect(settings.detectTeams == true)
+
+            // Restore originals
+            settings.detectTeamsClassic = originalClassic
+            settings.detectTeamsNew = originalNew
+        }
+    }
+
+    @Test("detectTeams persists both flags to UserDefaults")
+    func testDetectTeamsPersistsToUserDefaults() async throws {
+        await MainActor.run {
+            let settings = SettingsManager.shared
+
+            // Save original values
+            let originalClassic = settings.detectTeamsClassic
+            let originalNew = settings.detectTeamsNew
+
+            // Set unified property
+            settings.detectTeams = true
+
+            // Verify both persisted to UserDefaults
+            #expect(UserDefaults.standard.bool(forKey: "detectTeamsClassic") == true)
+            #expect(UserDefaults.standard.bool(forKey: "detectTeamsNew") == true)
+
+            // Set to false
+            settings.detectTeams = false
+
+            // Verify both persisted to UserDefaults
+            #expect(UserDefaults.standard.bool(forKey: "detectTeamsClassic") == false)
+            #expect(UserDefaults.standard.bool(forKey: "detectTeamsNew") == false)
+
+            // Restore originals
+            settings.detectTeamsClassic = originalClassic
+            settings.detectTeamsNew = originalNew
+        }
     }
 }

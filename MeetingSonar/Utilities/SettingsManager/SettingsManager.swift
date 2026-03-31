@@ -12,6 +12,39 @@ import SwiftUI
 import ServiceManagement
 import Combine
 
+// MARK: - Auto Processing Mode (F-0.10.4)
+
+/// Auto processing mode after recording ends
+enum AutoProcessingMode: String, Codable, CaseIterable, Identifiable {
+    case none = "none"               // No automatic processing
+    case transcriptionOnly = "asr"   // Only transcribe
+    case full = "full"               // Transcribe + Summarize
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .none:
+            return String(localized: "autoProcess.none", defaultValue: "Manual")
+        case .transcriptionOnly:
+            return String(localized: "autoProcess.transcription", defaultValue: "Transcription Only")
+        case .full:
+            return String(localized: "autoProcess.full", defaultValue: "Full (Transcribe + Summarize)")
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .none:
+            return String(localized: "autoProcess.none.description", defaultValue: "Process recordings manually from the dashboard")
+        case .transcriptionOnly:
+            return String(localized: "autoProcess.transcription.description", defaultValue: "Automatically transcribe after recording ends")
+        case .full:
+            return String(localized: "autoProcess.full.description", defaultValue: "Automatically transcribe and summarize after recording ends")
+        }
+    }
+}
+
 /// Manages application settings and user preferences
 @MainActor
 final class SettingsManager: ObservableObject, SettingsManagerProtocol {
@@ -101,6 +134,19 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
     /// Enable Microsoft Teams (New) detection
     @AppStorage("detectTeamsNew") var detectTeamsNew: Bool = true
 
+    /// Unified Teams detection (controls both Classic and New) - F-0.10.2
+    /// - Returns true if either is enabled (for migration compatibility)
+    /// - Sets both flags together for unified control
+    var detectTeams: Bool {
+        get {
+            return detectTeamsClassic || detectTeamsNew
+        }
+        set {
+            detectTeamsClassic = newValue
+            detectTeamsNew = newValue
+        }
+    }
+
     /// Enable Webex detection
     @AppStorage("detectWebex") var detectWebex: Bool = true
 
@@ -115,20 +161,21 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
     /// Enable WeChat voice call detection (default: false for privacy)
     @AppStorage("detectWeChat") var detectWeChat: Bool = false
 
-    // MARK: - Transcripts Settings
+    // MARK: - Auto Processing Settings (F-0.10.4)
 
-    /// Automatically generate summaries after recording
-    @AppStorage("autoGenerateSummary") var autoGenerateSummary: Bool = true
-
-    /// Transcript language preference ("auto", "en", "zh", etc.)
-    @AppStorage("transcriptLanguage") var transcriptLanguage: String = "auto"
+    /// Auto processing mode after recording ends
+    @Published var autoProcessingMode: AutoProcessingMode = .full {
+        didSet {
+            defaults.set(autoProcessingMode.rawValue, forKey: "autoProcessingMode")
+        }
+    }
 
     // MARK: - AI Models Selection (F-7.4)
 
     // MARK: - ASR Engine Type Selection (F-5.14)
 
-    /// Selected ASR engine type (whisper, qwen3asr, online)
-    @AppStorage(Keys.asrEngineType) var asrEngineType: ASREngineType = .whisper
+    /// Selected ASR engine type (cloud-only in v0.10.0+)
+    @AppStorage(Keys.asrEngineType) var asrEngineType: ASREngineType = .online
 
     // MARK: - Qwen3-ASR Backend Preference (F-5.14 Phase 3)
 
@@ -142,6 +189,60 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
 
     /// Selected LLM Prompt Template ID
     @AppStorage(Keys.selectedLLMPromptId) var selectedLLMPromptId: String = ""
+
+    // MARK: - ASR Hotwords (F-0.10.14)
+
+    /// Global hotwords list for ASR recognition improvement.
+    /// Stored as JSON file in MeetingSonar_Data/hotwords.json so it travels with user data.
+    @Published var asrHotwords: [String] = [] {
+        didSet {
+            saveHotwordsToFile()
+        }
+    }
+
+    /// File URL for hotwords storage
+    private var hotwordsFileURL: URL {
+        PathManager.shared.rootDataURL.appendingPathComponent("hotwords.json")
+    }
+
+    /// Load hotwords from JSON file in data directory
+    private func loadHotwordsFromFile() {
+        let url = hotwordsFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            asrHotwords = []
+            return
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            let words = try JSONDecoder().decode([String].self, from: data)
+            // Deduplicate (preserving order), trim, filter empty, enforce limit
+            var seen = Set<String>()
+            let cleaned = Array(
+                words
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .filter { seen.insert($0).inserted }
+                    .prefix(ZhipuASRLimits.maxHotwords)
+            )
+            asrHotwords = cleaned
+            LoggerService.shared.log(category: .ai, level: .debug, message: "[Settings] Loaded \(cleaned.count) hotwords from file")
+        } catch {
+            LoggerService.shared.log(category: .general, level: .error, message: "[Settings] Failed to load hotwords: \(error.localizedDescription)")
+            asrHotwords = []
+        }
+    }
+
+    /// Save hotwords to JSON file in data directory
+    private func saveHotwordsToFile() {
+        let url = hotwordsFileURL
+        do {
+            let data = try JSONEncoder().encode(asrHotwords)
+            try data.write(to: url, options: .atomic)
+            LoggerService.shared.log(category: .ai, level: .debug, message: "[Settings] Saved \(asrHotwords.count) hotwords to file")
+        } catch {
+            LoggerService.shared.log(category: .general, level: .error, message: "[Settings] Failed to save hotwords: \(error.localizedDescription)")
+        }
+    }
 
     // MARK: - Cloud AI Settings (v1.1.0)
 
@@ -280,6 +381,14 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         static let manualRecordingDefaultConfig = "manualRecordingDefaultConfig"
         /// 标记是否已完成设置迁移
         static let hasMigratedScenarioSettings = "hasMigratedScenarioSettings"
+
+        // MARK: - Auto Processing Migration (F-0.10.4)
+        /// 标记是否已完成自动处理设置迁移
+        static let hasMigratedAutoProcessing = "hasMigratedAutoProcessing"
+
+        // MARK: - Teams Detection Migration (F-0.10.2)
+        /// 标记是否已完成 Teams 检测设置迁移
+        static let hasMigratedTeamsDetection = "hasMigratedTeamsDetection"
     }
 
     enum SmartDetectionMode: String, CaseIterable, Identifiable {
@@ -387,6 +496,21 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         // Migrate legacy settings if needed
         migrateLegacySettings()
 
+        // Migrate auto-processing setting (F-0.10.4)
+        migrateAutoProcessingSetting()
+
+        // Migrate Teams detection setting (F-0.10.2)
+        migrateTeamsDetection()
+
+        // Load auto processing mode (F-0.10.4)
+        if let modeRaw = defaults.string(forKey: "autoProcessingMode"),
+           let mode = AutoProcessingMode(rawValue: modeRaw) {
+            autoProcessingMode = mode
+        }
+
         loadLaunchAtLoginState()
+
+        // Load hotwords from data directory file (F-0.10.14)
+        loadHotwordsFromFile()
     }
 }

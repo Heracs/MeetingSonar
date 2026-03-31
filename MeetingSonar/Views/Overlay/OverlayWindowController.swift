@@ -247,6 +247,7 @@ class OverlayWindowController: NSObject {
         let wrappedView = StatusPillWrapper(state: overlayState, onTap: {
             self.handlePillClick()
         }, onClose: {
+            self.requestStopRecording()
             self.dismissStatusPill()
         })
 

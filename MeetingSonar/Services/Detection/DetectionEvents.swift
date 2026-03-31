@@ -20,6 +20,3 @@ enum AppState {
     case hidden
 }
 
-protocol DetectionEventDelegate: AnyObject {
-    func didReceiveEvent(_ event: DetectionEvent)
-}

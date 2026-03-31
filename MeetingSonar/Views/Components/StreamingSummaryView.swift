@@ -16,6 +16,9 @@ struct StreamingSummaryView: View {
     let config: CloudAIModelConfig
     let provider: any CloudServiceProvider
 
+    /// Whether to automatically start streaming on appear
+    var autoStart: Bool = true
+
     @State private var viewModel = StreamingSummaryViewModel()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -57,6 +60,12 @@ struct StreamingSummaryView: View {
                     scrollToBottom(proxy: proxy)
                 }
                 .background(Color(nsColor: .textBackgroundColor))
+            }
+        }
+        .onAppear {
+            // Auto-start streaming when view appears (if enabled and not already started)
+            if autoStart && viewModel.state == .idle {
+                startStreaming()
             }
         }
         .alert("生成失败", isPresented: .constant(!viewModel.errorMessage.isEmpty)) {
@@ -266,14 +275,11 @@ struct StreamingTextView: View {
     let isComplete: Bool
     let isStreaming: Bool
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
         Group {
             if isComplete {
-                // Full markdown rendering when complete
-                Text(parseMarkdown(text))
-                    .textSelection(.enabled)
+                // Full block-level markdown rendering when complete
+                MarkdownContentView(content: text)
             } else {
                 // Plain text during streaming for better performance
                 Text(text)
@@ -283,16 +289,6 @@ struct StreamingTextView: View {
         .font(.body)
         .lineSpacing(4)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func parseMarkdown(_ text: String) -> AttributedString {
-        do {
-            var options = AttributedString.MarkdownParsingOptions()
-            options.interpretedSyntax = .inlineOnlyPreservingWhitespace
-            return try AttributedString(markdown: text, options: options)
-        } catch {
-            return AttributedString(stringLiteral: text)
-        }
     }
 }
 

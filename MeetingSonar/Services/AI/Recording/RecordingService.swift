@@ -454,6 +454,11 @@ final class RecordingService: RecordingServiceProtocol {
                         userInfo: ["url": url]
                     )
                 }
+
+                // F-0.10.4: Trigger auto-processing based on settings
+                Task { @MainActor in
+                    await self.triggerAutoProcessing(audioURL: url)
+                }
             }
             
             self.cleanup()
@@ -805,6 +810,60 @@ final class RecordingService: RecordingServiceProtocol {
             includeSystemAudio: audioCaptureService.isCapturing,
             includeMicrophone: microphoneService.isCapturing
         )
+    }
+
+    // MARK: - Auto Processing (F-0.10.4)
+
+    /// Trigger automatic processing after recording stops
+    /// - Parameter audioURL: URL of the recorded audio file
+    @MainActor
+    private func triggerAutoProcessing(audioURL: URL) async {
+        let mode = SettingsManager.shared.autoProcessingMode
+
+        guard mode != .none else {
+            logger.log(category: .ai, message: "[AutoProcessing] Disabled, skipping automatic processing")
+            return
+        }
+
+        logger.log(category: .ai, message: "[AutoProcessing] Starting automatic processing with mode: \(mode.rawValue)")
+
+        // Find the meeting ID from metadata
+        let filename = audioURL.lastPathComponent
+        guard let meta = MetadataManager.shared.recordings.first(where: { $0.filename == filename }) else {
+            logger.log(category: .ai, level: .warning, message: "[AutoProcessing] Could not find meeting metadata for: \(filename)")
+            return
+        }
+
+        let meetingID = meta.id
+
+        switch mode {
+        case .none:
+            break // Already handled above
+
+        case .transcriptionOnly:
+            // Only transcribe
+            Task {
+                let result = await AIProcessingCoordinator.shared.processASROnlyWithVersion(
+                    audioURL: audioURL,
+                    meetingID: meetingID
+                )
+                if result.text != nil {
+                    logger.log(category: .ai, message: "[AutoProcessing] Transcription completed successfully")
+                } else {
+                    logger.log(category: .ai, level: .error, message: "[AutoProcessing] Transcription failed")
+                }
+            }
+
+        case .full:
+            // Full pipeline: transcribe + summarize
+            Task {
+                await AIProcessingCoordinator.shared.process(
+                    audioURL: audioURL,
+                    meetingID: meetingID
+                )
+                logger.log(category: .ai, message: "[AutoProcessing] Full processing completed")
+            }
+        }
     }
 }
 

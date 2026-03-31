@@ -1,34 +1,23 @@
 import Foundation
 import AVFoundation
 
-/// ASR 引擎工厂 - 云端版本
-/// 用于创建和管理 ASR 引擎实例
+/// ASR Engine Factory — Cloud-only (v0.10.0+)
 enum ASREngineFactory {
 
-    /// 创建 ASR 引擎
-    /// 云端版本只支持在线API引擎
-    static func createEngine(type: ASREngineType) throws -> ASREngine {
+    /// Create online ASR engine
+    static func createEngine(type: ASREngineType = .online) throws -> ASREngine {
         LoggerService.shared.log(category: .ai, message: "Creating ASR engine of type: \(type.rawValue)")
-
-        switch type {
-        case .online:
-            return OnlineASREngine()
-        case .whisper, .qwen3asr:
-            throw ASREngineFactoryError.unsupportedEngine(
-                String(localized: "error.local_engine_not_supported", defaultValue: "本地引擎已不再支持，请使用云端API")
-            )
-        }
+        return OnlineASREngine()
     }
 
-    /// 获取当前可用的引擎类型
-    /// 云端版本只返回 [.online]
+    /// Available engine types (cloud-only)
     static func availableEngineTypes() -> [ASREngineType] {
         return [.online]
     }
 
-    /// 根据模型类型创建对应引擎
+    /// Create engine for model type
     static func createEngineForModel(_ modelType: ModelType) throws -> ASREngine {
-        return try createEngine(type: .online)
+        return try createEngine()
     }
 }
 
@@ -58,6 +47,42 @@ actor OnlineASREngine: ASREngine {
     private(set) var isLoaded = false
     private var configuration: OnlineASRConfig?
     private var cloudProvider: (any CloudServiceProvider)?
+
+    // MARK: - Context Chaining (F-0.10.13)
+
+    /// Combine user-configured static prompt with previous chunk's tail text.
+    /// Static prompt takes priority — placed first so truncation only affects the tail.
+    /// Returns nil if both inputs are nil/empty (preserves original behavior for first chunk with no prompt).
+    private func buildChainedPrompt(
+        staticPrompt: String?,
+        previousTailText: String?,
+        maxLength: Int
+    ) -> String? {
+        let staticPart = (staticPrompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let tailPart = (previousTailText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if staticPart.isEmpty && tailPart.isEmpty { return nil }
+        if tailPart.isEmpty { return String(staticPart.prefix(maxLength)) }
+        if staticPart.isEmpty { return String(tailPart.prefix(maxLength)) }
+
+        // Both present: static prompt first, then tail text with remaining budget
+        let separator = "\n"
+        let remainingBudget = maxLength - staticPart.count - separator.count
+        if remainingBudget <= 0 {
+            // Static prompt alone fills the budget — no room for tail
+            return String(staticPart.prefix(maxLength))
+        }
+        return staticPart + separator + String(tailPart.suffix(remainingBudget))
+    }
+
+    /// Extract tail text from a transcription result for context chaining.
+    /// Uses `.suffix` to grab the trailing portion — the part most relevant
+    /// for continuity with the next chunk.
+    private func extractTailText(from text: String, maxLength: Int) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        return String(trimmed.suffix(maxLength))
+    }
 
     // MARK: - ASREngine Protocol
 
@@ -104,6 +129,22 @@ actor OnlineASREngine: ASREngine {
         language: String,
         progress: ((Double) -> Void)?
     ) async throws -> TranscriptionResult {
+        // Delegate to the enriched method without chunk progress
+        return try await transcribe(
+            audioURL: audioURL,
+            language: language,
+            progress: progress,
+            chunkProgress: nil
+        )
+    }
+
+    /// Transcribe with chunk-level progress reporting
+    func transcribe(
+        audioURL: URL,
+        language: String,
+        progress: ((Double) -> Void)?,
+        chunkProgress: (@Sendable (ASRChunkStage) -> Void)?
+    ) async throws -> TranscriptionResult {
         guard isLoaded else {
             throw ASREngineFactoryError.initializationFailed(
                 String(localized: "error.engine_not_initialized", defaultValue: "引擎未初始化")
@@ -126,6 +167,9 @@ actor OnlineASREngine: ASREngine {
         ├─ Audio File: \(audioURL.lastPathComponent)
         └─ Endpoint: \(config.endpoint)
         """)
+
+        // 报告分割阶段
+        chunkProgress?(.splitting)
 
         // 使用 AudioSplitter 将音频分割并转换为 WAV 格式
         let splitter = AudioSplitter()
@@ -160,35 +204,52 @@ actor OnlineASREngine: ASREngine {
         var successfulChunks = 0
         var failedChunks = 0
 
+        // Context chaining: carry previous chunk's tail text as prompt context for the next chunk.
+        // Improves transcription coherence when sentences are split across chunk boundaries.
+        var previousChunkTailText: String?
+
         for (index, chunk) in chunks.enumerated() {
-            let chunkProgress = Double(index) / Double(chunks.count)
-            progress?(0.1 + chunkProgress * 0.8)
+            let chunkNumber = index + 1
+            let chunkProgressValue = Double(index) / Double(chunks.count)
+            progress?(0.1 + chunkProgressValue * 0.8)
+
+            // 报告当前 chunk 进度
+            chunkProgress?(.chunk(current: chunkNumber, total: chunks.count))
 
             do {
                 // 读取 WAV 格式的音频数据
                 let audioData = try Data(contentsOf: chunk.url)
                 let audioSizeMB = Double(audioData.count) / 1024 / 1024
 
+                // Build prompt: static user prompt + previous chunk's tail text
+                let chainedPrompt = buildChainedPrompt(
+                    staticPrompt: config.prompt,
+                    previousTailText: previousChunkTailText,
+                    maxLength: ZhipuASRLimits.maxPromptLength
+                )
+
                 LoggerService.shared.log(category: .ai, message: """
-                [ASR Chunk Request] \(index + 1)/\(chunks.count)
+                [ASR Chunk Request] \(chunkNumber)/\(chunks.count)
                 ├─ Model: \(config.model)
                 ├─ Provider: \(config.provider.displayName)
                 ├─ Audio Size: \(String(format: "%.2f", audioSizeMB)) MB
                 ├─ Start Time: \(chunk.start)s
-                └─ Duration: \(chunk.duration)s
+                ├─ Duration: \(chunk.duration)s
+                └─ Context Chain: \(previousChunkTailText != nil ? "Yes (\(previousChunkTailText!.count) chars)" : "No (first chunk or previous failed)")
                 """)
 
                 // 调用云端 API
                 let result = try await provider.transcribe(
                     audioData: audioData,
                     model: config.model,
-                    prompt: config.prompt
+                    prompt: chainedPrompt,
+                    hotwords: config.hotwords
                 )
 
                 // 记录成功响应
                 successfulChunks += 1
                 LoggerService.shared.log(category: .ai, message: """
-                [ASR Chunk Response] \(index + 1)/\(chunks.count) - SUCCESS
+                [ASR Chunk Response] \(chunkNumber)/\(chunks.count) - SUCCESS
                 ├─ Status: 200 OK
                 ├─ Processing Time: \(String(format: "%.2f", result.processingTime))s
                 ├─ Text Length: \(result.text.count) chars
@@ -210,16 +271,29 @@ actor OnlineASREngine: ASREngine {
                     fullText += result.text + " "
                 }
 
+                // Update context chain: extract tail for next chunk's prompt
+                previousChunkTailText = extractTailText(
+                    from: result.text,
+                    maxLength: ZhipuASRLimits.maxPromptLength
+                )
+
                 // 清理临时文件
                 try? FileManager.default.removeItem(at: chunk.url)
 
             } catch {
                 failedChunks += 1
                 LoggerService.shared.log(category: .ai, level: .error, message: """
-                [ASR Chunk Response] \(index + 1)/\(chunks.count) - FAILED
+                [ASR Chunk Response] \(chunkNumber)/\(chunks.count) - FAILED
                 ├─ Error: \(error.localizedDescription)
                 └─ Continuing with next chunk...
                 """)
+
+                // Reset context chain on failure — don't carry stale context forward
+                previousChunkTailText = nil
+
+                // 报告 chunk 失败
+                chunkProgress?(.chunkFailed(current: chunkNumber, total: chunks.count, error: error.localizedDescription))
+
                 // 继续处理下一个块，不中断整体流程
             }
         }

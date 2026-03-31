@@ -161,7 +161,7 @@ struct MetadataManagerAddSummaryTests {
 
         // Concurrently add versions to different meetings
         await withTaskGroup(of: Void.self) { group in
-            for (index, meeting) in meetings.enumerated() {
+            for (_, meeting) in meetings.enumerated() {
                 group.addTask {
                     for versionNum in 1...3 {
                         let version = Self.createTestSummaryVersion(
@@ -176,7 +176,7 @@ struct MetadataManagerAddSummaryTests {
 
         // Each meeting should have 3 versions
         for meeting in meetings {
-            let updatedMeeting = mockManager.get(id: meeting.id)
+            let updatedMeeting = await mockManager.get(id: meeting.id)
             #expect(updatedMeeting?.summaryVersions.count == 3)
         }
     }
@@ -215,14 +215,14 @@ struct MetadataManagerAddSummaryTests {
             // Task 3: Update meeting
             group.addTask {
                 // ✅ 修复: 读取最新的 meeting 数据以避免覆盖 Task 1 添加的 summary versions
-                var currentMeeting = mockManager.get(id: meeting.id) ?? meeting
+                var currentMeeting = await mockManager.get(id: meeting.id) ?? meeting
                 currentMeeting.title = "Updated Title"
                 await mockManager.update(currentMeeting)
             }
         }
 
         // Verify final state is consistent
-        let finalMeeting = mockManager.get(id: meeting.id)
+        let finalMeeting = await mockManager.get(id: meeting.id)
         #expect(finalMeeting?.summaryVersions.count == 5)
     }
 
@@ -287,7 +287,7 @@ struct MetadataManagerAddSummaryTests {
         let summaryVersion = Self.createTestSummaryVersion(meetingID: meeting.id)
         await mockManager.addSummaryVersion(summaryVersion, to: meeting.id)
 
-        let updatedMeeting = mockManager.get(id: meeting.id)
+        let updatedMeeting = await mockManager.get(id: meeting.id)
         #expect(updatedMeeting?.transcriptVersions.count == 1)
         #expect(updatedMeeting?.summaryVersions.count == 1)
     }
@@ -352,7 +352,7 @@ struct MetadataManagerAddSummaryTests {
         await mockManager.addSummaryVersion(version, to: meeting.id)
 
         // Should not crash, meeting should still be deleted
-        #expect(mockManager.get(id: meeting.id) == nil)
+        #expect(await mockManager.get(id: meeting.id) == nil)
     }
 
     // MARK: - Version Number Tests

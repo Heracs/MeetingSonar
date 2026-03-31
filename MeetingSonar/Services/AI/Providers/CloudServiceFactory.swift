@@ -167,7 +167,8 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
     func transcribe(
         audioData: Data,
         model: String,
-        prompt: String?
+        prompt: String?,
+        hotwords: [String]? = nil
     ) async throws -> CloudTranscriptionResult {
         let endpoint = "\(baseURL)/audio/transcriptions"
         guard let url = URL(string: endpoint) else {
@@ -268,6 +269,7 @@ actor OpenAICompatibleProvider: CloudServiceProvider {
         audioData: Data,
         model: String,
         prompt: String?,
+        hotwords: [String]? = nil,
         onProgress: (Double) -> Void
     ) async throws -> CloudTranscriptionResult {
         onProgress(0.5)

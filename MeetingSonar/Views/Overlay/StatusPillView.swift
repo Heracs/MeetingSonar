@@ -25,7 +25,6 @@ struct StatusPillView: View {
     var onToggleSystemAudio: (Bool) -> Void  // v1.0: Toggle system audio callback
     var onToggleMicrophone: (Bool) -> Void   // v1.0: Toggle microphone callback
 
-    @State private var isBlinking = false
     @State private var isHovering = false
 
     private var timeString: String {
@@ -81,60 +80,40 @@ struct StatusPillView: View {
     /// Pill appearance content
     /// Contains: Status indicator dot, audio source icons, duration, dropdown arrow
     private var pillContent: some View {
-        HStack(spacing: 6) {
-            // Status indicator area
-            HStack(spacing: 4) {
-                // Recording status dot (red blinking / orange paused)
-                Circle()
-                    .fill(isPaused ? Color.orange : Color.red)
-                    .frame(width: 8, height: 8)
-                    .opacity(isPaused ? 1.0 : (isBlinking ? 1.0 : 0.4))
-                    .animation(isPaused ? nil : Animation.easeInOut(duration: 0.8).repeatForever(autoreverses: true),
-                               value: isBlinking)
+        HStack(spacing: 8) {
+            // Recording indicator: red/orange dot with microphone icon
+            HStack(spacing: 5) {
+                // Recording status indicator using SF Symbol for reliable color rendering in Menu labels
+                Image(systemName: isPaused ? "pause.circle.fill" : "record.circle")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(isPaused ? Color.orange : Color.red)
+                    .symbolRenderingMode(.hierarchical)
 
-                // MARK: - Audio Source Indicators (v1.0)
-                //
-                // Purpose: Visually display which audio sources are currently being recorded
-                //
-                // Why needed:
-                // 1. Users can see at a glance which audio sources are being recorded
-                // 2. Provides visual feedback confirming settings have taken effect
-                HStack(spacing: 2) {
-                    if includeSystemAudio {
-                        Image(systemName: "speaker.wave.2.fill")
-                            .font(.system(size: 8))
-                            .foregroundColor(.secondary)
-                    }
-                    if includeMicrophone {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 8))
-                            .foregroundColor(.secondary)
-                    }
-                }
+                // Microphone icon as universal recording indicator
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(isPaused ? .orange : .red)
             }
 
             // Duration display
             Text(isPaused ? "Paused: \(timeString)" : "Recording: \(timeString)")
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.system(size: 14, weight: .medium, design: .monospaced))
 
             // Dropdown indicator arrow
             Image(systemName: "chevron.down")
-                .font(.system(size: 8))
+                .font(.system(size: 10))
                 .foregroundColor(.secondary)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(minWidth: 160)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(minWidth: 200)
         .background(.ultraThinMaterial)
-        .cornerRadius(12)
+        .cornerRadius(16)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 16)
                 .stroke(Color.white.opacity(0.1), lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-        .onAppear {
-            isBlinking = true
-        }
+        .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
     }
 }
 

@@ -35,7 +35,10 @@ extension SettingsManager {
             }
 
             // 3. Fallback to Sandbox Documents (Default)
-            return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
+            }
+            return documentsURL
         }
         set {
             // Validate path before accepting it

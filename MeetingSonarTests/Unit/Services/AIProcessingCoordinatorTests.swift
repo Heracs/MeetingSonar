@@ -151,7 +151,7 @@ struct AIProcessingCoordinatorTests {
     @Test("ProcessingStage enum has all cases")
     func testProcessingStageCases() {
         let stages: [AIProcessingCoordinator.ProcessingStage] = [
-            .idle, .asr, .persistingTranscript, .llm, .persistingSummary, .completed, .failed("test")
+            .idle, .asr(current: 1, total: 1), .persistingTranscript, .llm, .persistingSummary, .completed, .failed("test")
         ]
 
         #expect(stages.count == 7)
@@ -169,7 +169,7 @@ struct AIProcessingCoordinatorTests {
     func testProcessingStageEquatable() {
         let stage1 = AIProcessingCoordinator.ProcessingStage.idle
         let stage2 = AIProcessingCoordinator.ProcessingStage.idle
-        let stage3 = AIProcessingCoordinator.ProcessingStage.asr
+        let stage3 = AIProcessingCoordinator.ProcessingStage.asr(current: 1, total: 1)
 
         #expect(stage1 == stage2)
         #expect(stage1 != stage3)
@@ -185,7 +185,7 @@ struct AIProcessingCoordinatorTests {
 
     @Test("ProcessingStage asr has display name")
     func testProcessingStageASRDisplayName() {
-        let stage = AIProcessingCoordinator.ProcessingStage.asr
+        let stage = AIProcessingCoordinator.ProcessingStage.asr(current: 1, total: 1)
         #expect(!stage.displayName.isEmpty)
     }
 

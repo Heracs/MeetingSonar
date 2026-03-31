@@ -33,15 +33,15 @@ enum CloudServiceError: LocalizedError {
             return String(localized: "error.cloud.authenticationFailed", defaultValue: "认证失败，请检查 API Key")
         case .rateLimited(let retryAfter):
             if let seconds = retryAfter {
-                return String(format: String(localized: "error.cloud.rateLimited.seconds"), Int(seconds))
+                return String(localized: "error.cloud.rateLimited.seconds", defaultValue: "请求过于频繁，请 \(Int(seconds)) 秒后再试")
             }
             return String(localized: "error.cloud.rateLimited", defaultValue: "请求过于频繁，请稍后再试")
         case .quotaExceeded:
             return String(localized: "error.cloud.quotaExceeded", defaultValue: "API 配额已用完")
         case .networkError(let error):
-            return String(format: String(localized: "error.cloud.network"), error.localizedDescription)
+            return String(localized: "error.cloud.network.detail", defaultValue: "网络错误: \(error.localizedDescription)")
         case .apiError(let message):
-            return String(format: String(localized: "error.cloud.api"), message)
+            return String(localized: "error.cloud.api.detail", defaultValue: "API 错误: \(message)")
         case .invalidAPIKey:
             return String(localized: "error.cloud.invalidAPIKey", defaultValue: "无效的 API Key")
         case .serviceUnavailable:
@@ -77,11 +77,13 @@ protocol CloudServiceProvider: Sendable {
     ///   - audioData: 音频数据
     ///   - model: 模型名称
     ///   - prompt: 提示词（可选）
+    ///   - hotwords: 热词列表（可选），用于提升专业术语识别率
     /// - Returns: 转录结果
     func transcribe(
         audioData: Data,
         model: String,
-        prompt: String?
+        prompt: String?,
+        hotwords: [String]?
     ) async throws -> CloudTranscriptionResult
 
     /// 流式转录（用于长音频）
@@ -89,6 +91,7 @@ protocol CloudServiceProvider: Sendable {
         audioData: Data,
         model: String,
         prompt: String?,
+        hotwords: [String]?,
         onProgress: (Double) -> Void
     ) async throws -> CloudTranscriptionResult
 
@@ -143,7 +146,8 @@ extension CloudServiceProvider {
 
     /// 处理 HTTP 响应错误
     func handleHTTPError(_ response: HTTPURLResponse, data: Data?) -> CloudServiceError {
-        switch response.statusCode {
+        let statusCode = response.statusCode
+        switch statusCode {
         case 401:
             return .authenticationFailed
         case 403:
@@ -155,13 +159,17 @@ extension CloudServiceProvider {
         case 503:
             return .serviceUnavailable
         case 500...599:
+            if let data = data,
+               let errorMsg = parseErrorMessage(from: data) {
+                return .apiError("HTTP \(statusCode) - \(errorMsg)")
+            }
             return .serviceUnavailable
         default:
             if let data = data,
                let errorMsg = parseErrorMessage(from: data) {
-                return .apiError(errorMsg)
+                return .apiError("HTTP \(statusCode) - \(errorMsg)")
             }
-            return .apiError("HTTP \(response.statusCode)")
+            return .apiError("HTTP \(statusCode)")
         }
     }
 

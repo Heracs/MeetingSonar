@@ -45,4 +45,65 @@ extension SettingsManager {
             message: "Migrated legacy audio settings: system=\(legacySystem), mic=\(legacyMic)"
         )
     }
+
+    // MARK: - Auto Processing Migration (F-0.10.4)
+
+    /// Migrate autoGenerateSummary boolean to autoProcessingMode enum
+    func migrateAutoProcessingSetting() {
+        // Check if already migrated
+        guard !defaults.bool(forKey: Keys.hasMigratedAutoProcessing) else {
+            return
+        }
+
+        // Check if old setting exists
+        let oldValue = defaults.object(forKey: "autoGenerateSummary")
+
+        // Only migrate if old setting was explicitly set
+        if oldValue != nil {
+            let oldBool = defaults.bool(forKey: "autoGenerateSummary")
+
+            // Migrate: true → full, false → none
+            let newValue: AutoProcessingMode = oldBool ? .full : .none
+
+            defaults.set(newValue.rawValue, forKey: "autoProcessingMode")
+
+            LoggerService.shared.log(
+                category: .general,
+                message: "[Settings] Migrated auto-processing: \(oldBool) -> \(newValue.rawValue)"
+            )
+        }
+
+        // Mark as migrated
+        defaults.set(true, forKey: Keys.hasMigratedAutoProcessing)
+    }
+
+    // MARK: - Teams Detection Migration (F-0.10.2)
+
+    /// Migrate Teams detection settings to unified toggle
+    /// - If either Classic or New was enabled, enable both (unified behavior)
+    func migrateTeamsDetection() {
+        // Check if already migrated
+        guard !defaults.bool(forKey: Keys.hasMigratedTeamsDetection) else {
+            return
+        }
+
+        let classicEnabled = defaults.bool(forKey: "detectTeamsClassic")
+        let newEnabled = defaults.bool(forKey: "detectTeamsNew")
+
+        // If either was enabled, enable both (OR logic for migration)
+        // This ensures users who had only one version don't lose functionality
+        let unifiedEnabled = classicEnabled || newEnabled
+
+        defaults.set(unifiedEnabled, forKey: "detectTeamsClassic")
+        defaults.set(unifiedEnabled, forKey: "detectTeamsNew")
+
+        // Mark as migrated
+        defaults.set(true, forKey: Keys.hasMigratedTeamsDetection)
+
+        LoggerService.shared.log(
+            category: .general,
+            level: .info,
+            message: "[Settings] Migrated Teams detection: classic=\(classicEnabled), new=\(newEnabled) -> unified=\(unifiedEnabled)"
+        )
+    }
 }

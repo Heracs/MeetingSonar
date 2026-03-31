@@ -20,6 +20,8 @@ struct UnifiedSettingsView: View {
     @State private var showAbout = false
     @State private var showRestartAlert = false
     @State private var pendingLanguageChange: String? = nil
+    @State private var hotwordsText: String = ""
+    @State private var hotwordsSaveTask: Task<Void, Never>?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -297,22 +299,12 @@ struct UnifiedSettingsView: View {
                             Divider()
                                 .padding(.leading, 52)
 
+                            // F-0.10.2: Unified Teams toggle (controls both Classic and New)
                             AppDetectionToggleRow(
                                 appName: "Microsoft Teams",
-                                subtitle: "settings.smartDetection.teams.classic",
+                                subtitle: "settings.smartDetection.teams.unified",
                                 bundleIdentifier: "com.microsoft.teams",
-                                isEnabled: bindingForApp("com.microsoft.teams"),
-                                icon: "person.2.fill"
-                            )
-
-                            Divider()
-                                .padding(.leading, 42)
-
-                            AppDetectionToggleRow(
-                                appName: "Microsoft Teams",
-                                subtitle: "settings.smartDetection.teams.new",
-                                bundleIdentifier: "com.microsoft.teams2",
-                                isEnabled: bindingForApp("com.microsoft.teams2"),
+                                isEnabled: $settings.detectTeams,
                                 icon: "person.2.fill"
                             )
 
@@ -370,34 +362,121 @@ struct UnifiedSettingsView: View {
 
     // MARK: - AI Services Section
 
+    @State private var aiModels: [CloudAIModelConfig] = []
+
     private var aiServicesSection: some View {
         SectionContainer(
             icon: "cloud",
             title: "settings.aiServices.title"
         ) {
-            VStack(alignment: .leading, spacing: 16) {
-                labeledRow(label: "settings.aiServices.asrModel") {
-                    Text(settings.currentASRModel?.name ?? "settings.aiServices.noModel")
-                        .foregroundStyle(.secondary)
-                    Button("settings.aiServices.configure") {
-                        showAISettings = true
+            VStack(alignment: .leading, spacing: 12) {
+                if aiModels.isEmpty {
+                    // Empty state
+                    HStack {
+                        Text("settings.aiServices.noModelsConfigured")
+                            .foregroundStyle(.secondary)
+                            .font(.body)
+                        Spacer()
+                        Button("settings.aiServices.configure") {
+                            showAISettings = true
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
-                }
-                .accessibilityIdentifier("Row_ASRModel")
-
-                Divider()
-
-                labeledRow(label: "settings.aiServices.llmModel") {
-                    Text(settings.currentLLMModel?.name ?? "settings.aiServices.noModel")
-                        .foregroundStyle(.secondary)
-                    Button("settings.aiServices.configure") {
-                        showAISettings = true
+                } else {
+                    // Model list
+                    ForEach(aiModels) { model in
+                        aiModelRow(model)
+                        if model.id != aiModels.last?.id {
+                            Divider()
+                        }
                     }
-                    .buttonStyle(.bordered)
+
+                    Divider()
+
+                    // Footer: model count + configure button
+                    HStack {
+                        Text("\(aiModels.count) \(String(localized: "settings.aiServices.modelCount", defaultValue: "个模型已配置"))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("settings.aiServices.configure") {
+                            showAISettings = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
-                .accessibilityIdentifier("Row_LLMModel")
             }
+        }
+        .task {
+            await loadAIModels()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CloudAIModelManager.modelsDidChange)) { _ in
+            Task { await loadAIModels() }
+        }
+    }
+
+    @ViewBuilder
+    private func aiModelRow(_ model: CloudAIModelConfig) -> some View {
+        let isActiveASR = model.id.uuidString == settings.selectedUnifiedASRId
+        let isActiveLLM = model.id.uuidString == settings.selectedUnifiedLLMId
+
+        HStack(alignment: .center, spacing: 8) {
+            // Verification status icon
+            Image(systemName: model.isVerified ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(model.isVerified ? .green : .secondary.opacity(0.5))
+                .font(.body)
+                .help(model.isVerified
+                    ? String(localized: "settings.aiServices.verified", defaultValue: "已验证")
+                    : String(localized: "settings.aiServices.notVerified", defaultValue: "未验证"))
+
+            // Model name + provider
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.displayName)
+                    .font(.body)
+                    .lineLimit(1)
+                Text(model.provider.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            // Active indicator
+            if isActiveASR || isActiveLLM {
+                let activeLabels = [
+                    isActiveASR ? "ASR" : nil,
+                    isActiveLLM ? "LLM" : nil
+                ].compactMap { $0 }.joined(separator: "+")
+
+                Text(String(localized: "settings.aiServices.active", defaultValue: "当前 \(activeLabels)"))
+                    .font(.caption)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.15))
+                    .foregroundStyle(Color.accentColor)
+                    .cornerRadius(4)
+            }
+
+            // Capability badges
+            HStack(spacing: 4) {
+                ForEach(Array(model.capabilities).sorted(by: { $0.rawValue < $1.rawValue })) { capability in
+                    Text(capability.rawValue.uppercased())
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12))
+                        .foregroundStyle(.secondary)
+                        .cornerRadius(3)
+                }
+            }
+        }
+        .accessibilityIdentifier("Row_AIModel_\(model.id.uuidString)")
+    }
+
+    private func loadAIModels() async {
+        let models = await CloudAIModelManager.shared.models
+        await MainActor.run {
+            self.aiModels = models
         }
     }
 
@@ -409,31 +488,99 @@ struct UnifiedSettingsView: View {
             title: "settings.transcripts.title"
         ) {
             VStack(alignment: .leading, spacing: 16) {
-                Toggle("settings.transcripts.autoSummary", isOn: $settings.autoGenerateSummary)
-                    .accessibilityIdentifier("Toggle_AutoSummary")
+                // F-0.10.4: Auto Processing Mode Picker
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("settings.autoProcess.label")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Picker("", selection: $settings.autoProcessingMode) {
+                        ForEach(AutoProcessingMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(settings.autoProcessingMode.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityIdentifier("Picker_AutoProcess")
 
                 Divider()
 
-                labeledRow(label: "settings.transcripts.language") {
-                    Picker("", selection: $settings.transcriptLanguage) {
-                        Text("settings.transcripts.language.auto").tag("auto")
-                        Text("settings.transcripts.language.en").tag("en")
-                        Text("settings.transcripts.language.zh").tag("zh")
-                    }
-                    .pickerStyle(.menu)
-                    .frame(minWidth: 140)
-                }
-                .accessibilityIdentifier("Picker_Language")
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("settings.transcripts.language.explanation")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 16)
+                // F-0.10.14: ASR Hotwords Editor
+                hotwordsEditor
             }
         }
+    }
+
+    // MARK: - Hotwords Editor (F-0.10.14)
+
+    /// Hotwords count parsed from current text
+    private var hotwordsCount: Int {
+        hotwordsText
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .count
+    }
+
+    private var hotwordsEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("settings.asr.hotwords.title")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(hotwordsCount)/\(ZhipuASRLimits.maxHotwords)")
+                    .font(.caption)
+                    .foregroundStyle(hotwordsCount > ZhipuASRLimits.maxHotwords ? .red : .secondary)
+                    .accessibilityLabel("\(hotwordsCount) of \(ZhipuASRLimits.maxHotwords) hotwords configured")
+            }
+
+            TextEditor(text: $hotwordsText)
+                .font(.body.monospaced())
+                .frame(height: 120)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(.separatorColor), lineWidth: 1)
+                )
+                .accessibilityIdentifier("TextEditor_ASRHotwords")
+                .accessibilityLabel(String(localized: "settings.asr.hotwords.title", defaultValue: "ASR Hotwords"))
+                .onChange(of: hotwordsText) { _ in
+                    // Debounced save: cancel previous task, wait 0.5s, then save
+                    hotwordsSaveTask?.cancel()
+                    hotwordsSaveTask = Task {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        guard !Task.isCancelled else { return }
+                        saveHotwordsFromText()
+                    }
+                }
+                .onAppear {
+                    hotwordsText = settings.asrHotwords.joined(separator: "\n")
+                }
+
+            Text("settings.asr.hotwords.description")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Parse text lines into hotwords array and save to SettingsManager
+    private func saveHotwordsFromText() {
+        var seen = Set<String>()
+        let words = hotwordsText
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { $0.replacingOccurrences(of: ",", with: "") } // Strip commas to avoid API parsing issues
+            .filter { seen.insert($0).inserted } // Deduplicate preserving order
+        let truncated = Array(words.prefix(ZhipuASRLimits.maxHotwords))
+        settings.asrHotwords = truncated
     }
 
     // MARK: - Footer View
@@ -515,10 +662,9 @@ struct UnifiedSettingsView: View {
         switch bundleIdentifier {
         case "us.zoom.xos":
             return $settings.detectZoom
-        case "com.microsoft.teams":
-            return $settings.detectTeamsClassic
-        case "com.microsoft.teams2":
-            return $settings.detectTeamsNew
+        case "com.microsoft.teams", "com.microsoft.teams2":
+            // F-0.10.2: Both Teams IDs use unified toggle
+            return $settings.detectTeams
         case "com.cisco.webex.webex":
             return $settings.detectWebex
         default:
@@ -532,8 +678,7 @@ struct UnifiedSettingsView: View {
         settings.smartDetectionMode = .remind
         settings.audioQuality = .high
         settings.detectZoom = true
-        settings.detectTeamsClassic = true
-        settings.detectTeamsNew = true
+        settings.detectTeams = true  // F-0.10.2: Use unified property
         settings.detectWebex = true
         settings.detectTencentMeeting = true
         settings.detectFeishu = true

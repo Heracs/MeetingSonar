@@ -65,7 +65,8 @@ final class MockCloudServiceProvider: CloudServiceProvider, @unchecked Sendable 
     func transcribe(
         audioData: Data,
         model: String,
-        prompt: String?
+        prompt: String?,
+        hotwords: [String]? = nil
     ) async throws -> CloudTranscriptionResult {
         transcribeCalled = true
         lastTranscribeModel = model
@@ -91,6 +92,7 @@ final class MockCloudServiceProvider: CloudServiceProvider, @unchecked Sendable 
         audioData: Data,
         model: String,
         prompt: String?,
+        hotwords: [String]? = nil,
         onProgress: (Double) -> Void
     ) async throws -> CloudTranscriptionResult {
         transcribeStreamCalled = true

@@ -20,12 +20,17 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
     @Published var currentStage: ProcessingStage = .idle
     @Published var progress: Double = 0
     @Published var lastError: Error?
+    @Published var progressDetail: String = ""
+
+    /// The meeting ID currently being processed (used to scope progress UI to the correct recording)
+    @Published var processingMeetingID: UUID?
 
     // MARK: - Processing Stage
 
     enum ProcessingStage: Equatable {
         case idle
-        case asr
+        case splitting
+        case asr(current: Int, total: Int)
         case persistingTranscript
         case llm
         case persistingSummary
@@ -36,18 +41,30 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
             switch self {
             case .idle:
                 return String(localized: "processing.stage.idle", defaultValue: "空闲")
-            case .asr:
-                return String(localized: "processing.stage.asr", defaultValue: "语音识别中...")
+            case .splitting:
+                return String(localized: "processing.stage.splitting", defaultValue: "分析音频...")
+            case .asr(let current, let total):
+                return String(localized: "processing.stage.asr.progress", defaultValue: "语音识别中 (\(current)/\(total))")
             case .persistingTranscript:
                 return String(localized: "processing.stage.persisting_transcript", defaultValue: "保存转录结果...")
             case .llm:
-                return String(localized: "processing.stage.llm", defaultValue: "生成摘要中...")
+                return String(localized: "processing.stage.llm", defaultValue: "生成会议纪要...")
             case .persistingSummary:
-                return String(localized: "processing.stage.persisting_summary", defaultValue: "保存摘要...")
+                return String(localized: "processing.stage.persisting_summary", defaultValue: "保存纪要...")
             case .completed:
                 return String(localized: "processing.stage.completed", defaultValue: "处理完成")
             case .failed(let error):
-                return String(localized: "processing.stage.failed", defaultValue: "处理失败: \(error)")
+                return "处理失败: \(error)"
+            }
+        }
+
+        /// Whether this stage represents active processing
+        var isActive: Bool {
+            switch self {
+            case .idle, .completed, .failed:
+                return false
+            default:
+                return true
             }
         }
     }
@@ -65,19 +82,22 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         LoggerService.shared.log(category: .ai, message: "Starting AI processing pipeline for meeting: \(meetingID)")
 
         isProcessing = true
+        processingMeetingID = meetingID
         progress = 0
         lastError = nil
         let startTime = Date()
 
         do {
             // Stage 1: ASR
-            currentStage = .asr
+            currentStage = .splitting
+            progressDetail = String(localized: "processing.detail.preparing", defaultValue: "准备音频文件...")
             let result = try await performASRWithResult(audioURL: audioURL, meetingID: meetingID)
             let asrProcessingTime = Date().timeIntervalSince(startTime)
             progress = 0.4
 
             // Stage 2: Persist Transcript
             currentStage = .persistingTranscript
+            progressDetail = String(localized: "processing.detail.saving_transcript", defaultValue: "保存转录结果...")
             let (_, transcriptVersion) = try await persistTranscriptWithVersion(
                 result: result,
                 audioURL: audioURL,
@@ -88,6 +108,7 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
 
             // Stage 3: LLM Summary
             currentStage = .llm
+            progressDetail = String(localized: "processing.detail.generating_summary", defaultValue: "正在生成会议纪要...")
             let llmStartTime = Date()
             let summary = try await performLLM(transcript: result.text, meetingID: meetingID)
             let llmProcessingTime = Date().timeIntervalSince(llmStartTime)
@@ -95,6 +116,7 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
 
             // Stage 4: Persist Summary
             currentStage = .persistingSummary
+            progressDetail = String(localized: "processing.detail.saving_summary", defaultValue: "保存会议纪要...")
             _ = try await persistSummaryWithVersion(
                 summary,
                 audioURL: audioURL,
@@ -105,11 +127,13 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
 
             // Completed
             currentStage = .completed
+            progressDetail = String(localized: "processing.detail.done", defaultValue: "处理完成")
             LoggerService.shared.log(category: .ai, message: "AI processing pipeline completed for meeting: \(meetingID)")
 
         } catch {
             lastError = error
             currentStage = .failed(error.localizedDescription)
+            progressDetail = error.localizedDescription
             LoggerService.shared.log(category: .ai, level: .error, message: "AI processing pipeline failed: \(error.localizedDescription)")
         }
 
@@ -131,17 +155,20 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         LoggerService.shared.log(category: .ai, message: "Starting ASR-only processing for meeting: \(meetingID)")
 
         isProcessing = true
+        processingMeetingID = meetingID
         progress = 0
         lastError = nil
         let startTime = Date()
 
         do {
-            currentStage = .asr
+            currentStage = .splitting
+            progressDetail = String(localized: "processing.detail.preparing", defaultValue: "准备音频文件...")
             let result = try await performASRWithResult(audioURL: audioURL, meetingID: meetingID)
             let processingTime = Date().timeIntervalSince(startTime)
             progress = 0.8
 
             currentStage = .persistingTranscript
+            progressDetail = String(localized: "processing.detail.saving_transcript", defaultValue: "保存转录结果...")
             let (transcriptURL, version) = try await persistTranscriptWithVersion(
                 result: result,
                 audioURL: audioURL,
@@ -151,6 +178,7 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
             progress = 1.0
 
             currentStage = .completed
+            progressDetail = String(localized: "processing.detail.done", defaultValue: "处理完成")
             LoggerService.shared.log(category: .ai, message: "ASR processing completed for meeting: \(meetingID), version: \(version.versionNumber)")
 
             isProcessing = false
@@ -159,6 +187,7 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         } catch {
             lastError = error
             currentStage = .failed(error.localizedDescription)
+            progressDetail = error.localizedDescription
             LoggerService.shared.log(category: .ai, level: .error, message: "ASR processing failed: \(error.localizedDescription)")
             isProcessing = false
             return (nil, nil, nil)
@@ -173,6 +202,10 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         let actualMeetingID = meetingID ?? UUID()
         let (text, url, version) = await processASROnlyWithVersion(audioURL: audioURL, meetingID: actualMeetingID)
         guard let transcriptText = text, let transcriptURL = url, let transcriptVersion = version else {
+            // Propagate the original error if available, instead of a generic message
+            if let originalError = lastError {
+                throw originalError
+            }
             throw AIProcessingError.notImplemented(String(localized: "error.asr.transcription_failed", defaultValue: "转录失败"))
         }
         return (transcriptText, transcriptURL, transcriptVersion.id)
@@ -211,7 +244,24 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
 
     /// 执行 ASR 转录并返回完整结果
     private func performASRWithResult(audioURL: URL, meetingID: UUID) async throws -> ASRTranscriptionResult {
-        let result = try await ASRService.shared.transcribe(audioURL: audioURL, meetingID: meetingID)
+        let result = try await ASRService.shared.transcribe(
+            audioURL: audioURL,
+            meetingID: meetingID,
+            onChunkProgress: { [weak self] stage in
+                guard let self else { return }
+                switch stage {
+                case .splitting:
+                    self.currentStage = .splitting
+                    self.progressDetail = String(localized: "processing.detail.splitting", defaultValue: "正在分割音频...")
+                case .chunk(let current, let total):
+                    self.currentStage = .asr(current: current, total: total)
+                    self.progressDetail = "正在转录第 \(current)/\(total) 段..."
+                case .chunkFailed(let current, let total, let error):
+                    self.currentStage = .asr(current: current, total: total)
+                    self.progressDetail = "第 \(current) 段转录失败: \(error)"
+                }
+            }
+        )
         return result
     }
 
@@ -329,12 +379,9 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
             LoggerService.shared.log(category: .ai, message: "LLM summary generated: \(result.text.prefix(100))...")
             return result.text
 
-        } catch let error as CloudServiceError {
-            LoggerService.shared.log(category: .ai, level: .error, message: "Cloud service error: \(error.localizedDescription)")
-            throw AIProcessingError.notImplemented(error.localizedDescription)
         } catch {
             LoggerService.shared.log(category: .ai, level: .error, message: "LLM generation failed: \(error.localizedDescription)")
-            throw AIProcessingError.notImplemented(error.localizedDescription)
+            throw error
         }
     }
 
@@ -465,6 +512,8 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         isProcessing = false
         currentStage = .idle
         progress = 0
+        progressDetail = ""
+        processingMeetingID = nil
         lastError = nil
     }
 }

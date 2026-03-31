@@ -2,11 +2,7 @@
 //  ASREngine.swift
 //  MeetingSonar
 //
-//  F-5.13a: ASR Engine Protocol
-//  Unified interface for ASR engines (Whisper, Qwen3-ASR, etc.)
-//
-//  Architecture Phase 1: Protocol Abstraction Layer
-//  Created: 2025-02-05
+//  ASR Engine Protocol — Cloud-only architecture (v0.10.0+)
 //
 
 import Foundation
@@ -14,42 +10,17 @@ import Foundation
 // MARK: - ASR Engine Type
 
 /// ASR engine type identifier
+/// Note: .whisper and .qwen3asr retained for @AppStorage backward compatibility only.
+/// Only .online is functional in v0.10.0+.
 enum ASREngineType: String, Codable, Sendable {
     case whisper = "whisper"
     case qwen3asr = "qwen3asr"
-    case online = "online"  // For online API-based engines
+    case online = "online"
 }
 
 // MARK: - ASR Engine Protocol
 
-/// Unified ASR engine protocol for speech recognition
-///
-/// All ASR engines must conform to this protocol to provide a consistent
-/// interface for model loading, audio transcription, and resource management.
-///
-/// # Thread Safety
-/// Implementations MUST use `actor` for thread-safe access to model state
-/// and C API pointers. This ensures safe concurrent access from multiple callers.
-///
-/// # Example Implementation
-/// ```swift
-/// actor WhisperASREngine: ASREngine {
-///     let engineType: ASREngineType = .whisper
-///     private var context: OpaquePointer?
-///
-///     func loadModel(modelPath: URL, config: some ASRModelConfiguration) async throws {
-///         // Load model using C API
-///     }
-///
-///     func transcribe(audioURL: URL, language: String, progress: ((Double) -> Void)?) async throws -> TranscriptResult {
-///         // Perform transcription
-///     }
-///
-///     func unload() async {
-///         // Release resources
-///     }
-/// }
-/// ```
+/// Unified ASR engine protocol for cloud-based speech recognition
 protocol ASREngine: Actor {
 
     // MARK: - Required Properties

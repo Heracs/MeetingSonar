@@ -74,8 +74,8 @@ class MenuIconGenerator {
     private func generateIcon(for state: IconState) -> NSImage {
         // 1. Load Base Image
         // Use a default size if image fails to load, though it shouldn't.
-        // Menu bar icons are typically 22x22 points.
-        let targetSize = NSSize(width: 22, height: 22)
+        // Standard macOS menu bar icon size: 18x18 points (reduced from 22 for better visual fit)
+        let targetSize = NSSize(width: 18, height: 18)
         
         // Find base image from Resources specifically if needed, or Assets
         // Assuming "menubar_icon" is in Bundle Resources or Assets

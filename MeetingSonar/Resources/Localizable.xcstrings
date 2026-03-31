@@ -32,6 +32,26 @@
         }
       }
     },
+    "%lld %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld %2$@"
+          }
+        }
+      }
+    },
+    "%lld of %lld hotwords configured" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld hotwords configured"
+          }
+        }
+      }
+    },
     "%lld 个" : {
 
     },
@@ -43,6 +63,19 @@
     },
     "%lld 字符" : {
 
+    },
+    "%lld." : {
+
+    },
+    "%lld/%lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld/%2$lld"
+          }
+        }
+      }
     },
     "%lld/%lld tokens · %lld 字" : {
       "localizations" : {
@@ -611,6 +644,72 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "检测到会议时自动开始录音。将静默显示通知。"
+          }
+        }
+      }
+    },
+    "autoProcess.full" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Full (Transcribe + Summarize)"
+          }
+        }
+      }
+    },
+    "autoProcess.full.description" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Automatically transcribe and summarize after recording ends"
+          }
+        }
+      }
+    },
+    "autoProcess.none" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Manual"
+          }
+        }
+      }
+    },
+    "autoProcess.none.description" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Process recordings manually from the dashboard"
+          }
+        }
+      }
+    },
+    "autoProcess.transcription" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Transcription Only"
+          }
+        }
+      }
+    },
+    "autoProcess.transcription.description" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Automatically transcribe after recording ends"
           }
         }
       }
@@ -1589,8 +1688,16 @@
         }
       }
     },
-    "error.cloud.api" : {
-
+    "error.cloud.api.detail" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "API 错误: %@"
+          }
+        }
+      }
     },
     "error.cloud.authenticationFailed" : {
       "extractionState" : "extracted_with_value",
@@ -1636,8 +1743,16 @@
         }
       }
     },
-    "error.cloud.network" : {
-
+    "error.cloud.network.detail" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "网络错误: %@"
+          }
+        }
+      }
     },
     "error.cloud.quotaExceeded" : {
       "extractionState" : "extracted_with_value",
@@ -1662,7 +1777,15 @@
       }
     },
     "error.cloud.rateLimited.seconds" : {
-
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "请求过于频繁，请 %lld 秒后再试"
+          }
+        }
+      }
     },
     "error.cloud.serviceUnavailable" : {
       "extractionState" : "extracted_with_value",
@@ -2107,17 +2230,6 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "请先添加云端 LLM 模型配置"
-          }
-        }
-      }
-    },
-    "error.local_engine_not_supported" : {
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "本地引擎已不再支持，请使用云端API"
           }
         }
       }
@@ -3802,13 +3914,79 @@
         }
       }
     },
-    "processing.stage.asr" : {
+    "processing.detail.done" : {
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "语音识别中..."
+            "value" : "处理完成"
+          }
+        }
+      }
+    },
+    "processing.detail.generating_summary" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "正在生成会议纪要..."
+          }
+        }
+      }
+    },
+    "processing.detail.preparing" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "准备音频文件..."
+          }
+        }
+      }
+    },
+    "processing.detail.saving_summary" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "保存会议纪要..."
+          }
+        }
+      }
+    },
+    "processing.detail.saving_transcript" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "保存转录结果..."
+          }
+        }
+      }
+    },
+    "processing.detail.splitting" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "正在分割音频..."
+          }
+        }
+      }
+    },
+    "processing.stage.asr.progress" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "语音识别中 (%1$lld/%2$lld)"
           }
         }
       }
@@ -3820,17 +3998,6 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "处理完成"
-          }
-        }
-      }
-    },
-    "processing.stage.failed" : {
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "处理失败: %@"
           }
         }
       }
@@ -3852,7 +4019,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "生成摘要中..."
+            "value" : "生成会议纪要..."
           }
         }
       }
@@ -3863,7 +4030,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "保存摘要..."
+            "value" : "保存纪要..."
           }
         }
       }
@@ -3875,6 +4042,17 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "保存转录结果..."
+          }
+        }
+      }
+    },
+    "processing.stage.splitting" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "分析音频..."
           }
         }
       }
@@ -4496,6 +4674,17 @@
         }
       }
     },
+    "settings.aiServices.active" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "当前 %@"
+          }
+        }
+      }
+    },
     "settings.aiServices.asrModel" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4547,6 +4736,17 @@
         }
       }
     },
+    "settings.aiServices.modelCount" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "个模型已配置"
+          }
+        }
+      }
+    },
     "settings.aiServices.noModel" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4564,6 +4764,20 @@
         }
       }
     },
+    "settings.aiServices.noModelsConfigured" : {
+
+    },
+    "settings.aiServices.notVerified" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "未验证"
+          }
+        }
+      }
+    },
     "settings.aiServices.title" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4577,6 +4791,31 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "AI 服务"
+          }
+        }
+      }
+    },
+    "settings.aiServices.verified" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "已验证"
+          }
+        }
+      }
+    },
+    "settings.asr.hotwords.description" : {
+
+    },
+    "settings.asr.hotwords.title" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "ASR Hotwords"
           }
         }
       }
@@ -4824,6 +5063,9 @@
           }
         }
       }
+    },
+    "settings.autoProcess.label" : {
+
     },
     "settings.general.choose" : {
       "extractionState" : "manual",
@@ -5501,6 +5743,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "新版"
+          }
+        }
+      }
+    },
+    "settings.smartDetection.teams.unified" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Detects both Classic and New"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同时检测经典版和新版"
           }
         }
       }
@@ -6531,9 +6790,6 @@
           }
         }
       }
-    },
-    "处理" : {
-
     },
     "处理失败" : {
       "extractionState" : "manual",

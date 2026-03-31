@@ -28,8 +28,13 @@ class ASRService: ObservableObject {
     /// - Parameters:
     ///   - audioURL: 音频文件URL
     ///   - meetingID: 关联的会议ID
+    ///   - onChunkProgress: 可选的 chunk 级别进度回调（在 MainActor 上调用）
     /// - Returns: 转录结果
-    func transcribe(audioURL: URL, meetingID: UUID) async throws -> ASRTranscriptionResult {
+    func transcribe(
+        audioURL: URL,
+        meetingID: UUID,
+        onChunkProgress: ((ASRChunkStage) -> Void)? = nil
+    ) async throws -> ASRTranscriptionResult {
         LoggerService.shared.log(category: .ai, message: "Starting transcription for meeting: \(meetingID)")
 
         isProcessing = true
@@ -40,14 +45,37 @@ class ASRService: ObservableObject {
             // 获取或创建引擎
             let engine = try await getOrCreateEngine()
 
-            // 执行转录
-            let transcriptResult = try await engine.transcribe(
-                audioURL: audioURL,
-                language: "zh",
-                progress: { [weak self] p in
-                    self?.progress = p * 0.8  // 预留 20% 给后续处理
+            // 准备 chunk 进度回调（跨 actor 边界需要 @Sendable）
+            let sendableChunkProgress: (@Sendable (ASRChunkStage) -> Void)? = onChunkProgress.map { handler in
+                { @Sendable stage in
+                    Task { @MainActor in
+                        handler(stage)
+                    }
                 }
-            )
+            }
+
+            // 执行转录（优先使用带 chunk 进度的方法）
+            let transcriptResult: TranscriptionResult
+            if let onlineEngine = engine as? OnlineASREngine {
+                transcriptResult = try await onlineEngine.transcribe(
+                    audioURL: audioURL,
+                    language: "zh",
+                    progress: { [weak self] p in
+                        Task { @MainActor in
+                            self?.progress = p * 0.8
+                        }
+                    },
+                    chunkProgress: sendableChunkProgress
+                )
+            } else {
+                transcriptResult = try await engine.transcribe(
+                    audioURL: audioURL,
+                    language: "zh",
+                    progress: { [weak self] p in
+                        self?.progress = p * 0.8  // 预留 20% 给后续处理
+                    }
+                )
+            }
 
             progress = 1.0
 
@@ -91,6 +119,11 @@ class ASRService: ObservableObject {
 
         // 从 SettingsManager 获取用户选择的模型 ID
         let selectedModelId = SettingsManager.shared.selectedUnifiedASRId
+        LoggerService.shared.log(category: .ai, message: """
+        [ASR Service] Resolving ASR model
+        ├─ Selected ID: \(selectedModelId)
+        └─ Available models: \(await CloudAIModelManager.shared.getModels(for: .asr).map { "\($0.displayName) (\($0.id.uuidString))" })
+        """)
 
         // 从 CloudAIModelManager 获取对应 ID 的模型配置
         guard let config = await CloudAIModelManager.shared.getModel(byId: selectedModelId),
@@ -104,10 +137,19 @@ class ASRService: ObservableObject {
             LoggerService.shared.log(category: .ai, level: .warning, message: """
             [ASR Service] Selected model not found, using fallback
             ├─ Selected ID: \(selectedModelId)
-            └─ Fallback: \(fallbackConfig.displayName)
+            ├─ Fallback: \(fallbackConfig.displayName)
+            └─ Fallback ID: \(fallbackConfig.id.uuidString)
             """)
 
-            guard let apiKey = await CloudAIModelManager.shared.getAPIKey(for: fallbackConfig.id), !apiKey.isEmpty else {
+            let apiKey = await CloudAIModelManager.shared.getAPIKey(for: fallbackConfig.id)
+            LoggerService.shared.log(category: .ai, message: """
+            [ASR Service] API Key lookup for fallback model
+            ├─ Model ID: \(fallbackConfig.id.uuidString)
+            ├─ Key found: \(apiKey != nil)
+            └─ Key empty: \(apiKey?.isEmpty ?? true)
+            """)
+
+            guard let apiKey, !apiKey.isEmpty else {
                 throw ASREngineFactoryError.initializationFailed(
                     String(localized: "error.api_key_missing", defaultValue: "请先配置云端 ASR 服务的 API Key")
                 )
@@ -122,6 +164,9 @@ class ASRService: ObservableObject {
             // 获取选中的提示词
             let promptContent = await PromptManager.shared.getSelectedPromptContent(for: .asr)
 
+            // 获取全局热词 (F-0.10.14)
+            let hotwords = SettingsManager.shared.asrHotwords
+
             // 创建在线配置
             let onlineConfig = OnlineASRConfig(
                 provider: fallbackConfig.provider,
@@ -129,7 +174,8 @@ class ASRService: ObservableObject {
                 apiKey: apiKey,
                 model: asrSettings.modelName,
                 language: "zh",
-                prompt: promptContent.isEmpty ? nil : promptContent
+                prompt: promptContent.isEmpty ? nil : promptContent,
+                hotwords: hotwords.isEmpty ? nil : hotwords
             )
 
             // 初始化引擎
@@ -146,7 +192,15 @@ class ASRService: ObservableObject {
         └─ Display Name: \(config.displayName)
         """)
 
-        guard let apiKey = await CloudAIModelManager.shared.getAPIKey(for: config.id), !apiKey.isEmpty else {
+        let primaryApiKey = await CloudAIModelManager.shared.getAPIKey(for: config.id)
+        LoggerService.shared.log(category: .ai, message: """
+        [ASR Service] API Key lookup for selected model
+        ├─ Model ID: \(config.id.uuidString)
+        ├─ Key found: \(primaryApiKey != nil)
+        └─ Key empty: \(primaryApiKey?.isEmpty ?? true)
+        """)
+
+        guard let apiKey = primaryApiKey, !apiKey.isEmpty else {
             throw ASREngineFactoryError.initializationFailed(
                 String(localized: "error.api_key_missing", defaultValue: "请先配置云端 ASR 服务的 API Key")
             )
@@ -161,6 +215,9 @@ class ASRService: ObservableObject {
         // 获取选中的提示词
         let promptContent = await PromptManager.shared.getSelectedPromptContent(for: .asr)
 
+        // 获取全局热词 (F-0.10.14)
+        let hotwords = SettingsManager.shared.asrHotwords
+
         // 创建在线配置
         let onlineConfig = OnlineASRConfig(
             provider: config.provider,
@@ -168,7 +225,8 @@ class ASRService: ObservableObject {
             apiKey: apiKey,
             model: asrSettings.modelName,
             language: "zh",
-            prompt: promptContent.isEmpty ? nil : promptContent
+            prompt: promptContent.isEmpty ? nil : promptContent,
+            hotwords: hotwords.isEmpty ? nil : hotwords
         )
 
         // 初始化引擎
@@ -211,3 +269,15 @@ struct ASRTranscriptionResult {
 }
 
 // TranscriptSegment is defined in Models/TranscriptModel.swift
+
+// MARK: - ASR Chunk Progress
+
+/// Represents the current stage of chunk-level ASR processing
+enum ASRChunkStage {
+    /// Audio is being split into chunks
+    case splitting
+    /// Processing chunk N of total
+    case chunk(current: Int, total: Int)
+    /// Chunk N failed with error message
+    case chunkFailed(current: Int, total: Int, error: String)
+}

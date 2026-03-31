@@ -45,7 +45,7 @@ class ApplicationMonitor: ObservableObject {
         MonitoredApp(
             bundleIdentifier: "com.microsoft.teams2", // New Teams (Work/School)
             processName: "MSTeams",
-            logProcessAliases: ["MSTeams"],
+            logProcessAliases: ["MSTeams", "Microsoft Teams WebView Helper"],
             meetingWindowPatterns: [] // Reliant on Mic Detection (LogMonitor) due to "No Title" issue
         ),
         MonitoredApp(

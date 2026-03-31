@@ -111,10 +111,10 @@ class LoggerService {
             fileHandle?.seekToEndOfFile()
             logFileURL = fileURL
             
-            print("LoggerService: Log file set to \(fileURL.path)")
+            os_log("LoggerService: Log file set to %{public}@", fileURL.path)
             
         } catch {
-            print("LoggerService: Failed to setup log file: \(error)")
+            os_log("LoggerService: Failed to setup log file: %{public}@", "\(error)")
         }
     }
     
@@ -141,7 +141,7 @@ class LoggerService {
                     }
                 }
             } catch {
-                print("LoggerService: Failed to clean old logs: \(error)")
+                os_log("LoggerService: Failed to clean old logs: %{public}@", "\(error)")
             }
         }
     }

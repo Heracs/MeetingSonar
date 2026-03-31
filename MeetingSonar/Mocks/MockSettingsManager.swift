@@ -45,6 +45,12 @@ final class MockSettingsManager: ObservableObject {
     @Published var detectTeamsNew: Bool = true
     @Published var detectWebex: Bool = true
 
+    /// Unified Teams detection (controls both Classic and New) - F-0.10.2
+    var detectTeams: Bool {
+        get { detectTeamsClassic || detectTeamsNew }
+        set { detectTeamsClassic = newValue; detectTeamsNew = newValue }
+    }
+
     // Chinese Apps
     @Published var detectTencentMeeting: Bool = true
     @Published var detectFeishu: Bool = true

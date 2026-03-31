@@ -93,6 +93,7 @@ struct PromptManagerTests {
         guard !templates.isEmpty else {
             // 如果没有模板，先重置并等待
             await manager.resetAllData()
+            return  // 添加 return 语句
         }
 
         // 重新获取模板

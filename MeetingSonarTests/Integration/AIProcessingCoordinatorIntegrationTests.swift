@@ -382,7 +382,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         #expect(stageHistory.count >= 4, "Should have at least 4 stages")
 
         // Verify stage order
-        let expectedStages = ["asr", "persistingTranscript", "llm", "persistingSummary", "completed"]
+        let expectedStages = ["asr(current: 1, total: 1)", "persistingTranscript", "llm", "persistingSummary", "completed"]
         for expected in expectedStages {
             #expect(stageHistory.contains(expected), "Should contain stage: \(expected)")
         }
@@ -846,8 +846,8 @@ class MockAIProcessingCoordinator: ObservableObject {
 
         do {
             // Stage 1: ASR
-            currentStage = .asr
-            onStageChange?(.asr)
+            currentStage = .asr(current: 1, total: 1)
+            onStageChange?(.asr(current: 1, total: 1))
             asrServiceCalled = true
             lastASRMeetingID = meetingID
 
@@ -1004,8 +1004,8 @@ class MockAIProcessingCoordinator: ObservableObject {
         lastError = nil
 
         do {
-            currentStage = .asr
-            onStageChange?(.asr)
+            currentStage = .asr(current: 1, total: 1)
+            onStageChange?(.asr(current: 1, total: 1))
             asrServiceCalled = true
             lastASRMeetingID = meetingID
 

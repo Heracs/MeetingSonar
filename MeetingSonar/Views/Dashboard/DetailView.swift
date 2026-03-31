@@ -21,8 +21,7 @@ struct DetailView: View {
     @State private var summaryContent: String? = nil
 
     // MARK: - AI Processing State
-    @State private var isProcessing = false
-    @State private var processingStatus: String = ""
+    @ObservedObject private var aiCoordinator = AIProcessingCoordinator.shared
     @State private var showErrorAlert = false
     @State private var errorMessage: String = ""
 
@@ -56,6 +55,8 @@ struct DetailView: View {
     @State private var streamingConfig: CloudAIModelConfig?
     @State private var streamingProvider: (any CloudServiceProvider)?
     @State private var isLoadingStreamingConfig = false
+    /// Incremented each time streaming should be triggered, used with .task(id:) to force re-execution
+    @State private var streamingTriggerID: Int = 0
 
     // MARK: - Body
 
@@ -263,50 +264,95 @@ struct DetailView: View {
                 }
             }
 
-            Spacer()
+            Divider()
+                .frame(height: 32)
 
-            // Processing Actions
-            if isProcessing {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(processingStatus)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+            // Processing Actions (inline, no Spacer)
+            if aiCoordinator.isProcessing && aiCoordinator.processingMeetingID == recordingID {
+                processingProgressView
             } else {
-                // Consolidated Process Menu
-                Menu {
-                    if !meta.hasTranscript {
-                        Button(action: { onReprocessPressed() }) {
-                            Label("开始处理", systemImage: "sparkles")
-                        }
-                    } else {
-                        Button(action: { onTranscribePressed() }) {
-                            Label("重新转录", systemImage: "waveform")
-                        }
-
-                        Button(action: { onGenerateSummaryPressed() }) {
-                            Label("生成纪要", systemImage: "doc.text")
-                        }
-
-                        Divider()
-
-                        Button(action: { onReprocessPressed() }) {
-                            Label("全部重新处理", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                    }
-                } label: {
-                    Label("处理", systemImage: "play.fill")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .menuStyle(.borderedButton)
-                .controlSize(.regular)
+                aiActionButtons(meta)
             }
+
+            Spacer()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    // MARK: - AI Action Buttons
+
+    @ViewBuilder
+    private func aiActionButtons(_ meta: MeetingMeta) -> some View {
+        if !meta.hasTranscript {
+            // No transcript yet — single primary button
+            Button(action: { onReprocessPressed() }) {
+                Label("开始处理", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        } else {
+            // Has transcript — direct action buttons + overflow menu
+            HStack(spacing: 8) {
+                Button(action: { onTranscribePressed() }) {
+                    Label("重新转录", systemImage: "waveform")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button(action: { onGenerateSummaryPressed() }) {
+                    Label("生成纪要", systemImage: "doc.text")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                // Overflow menu for less common actions
+                Menu {
+                    Button(action: { onReprocessPressed() }) {
+                        Label("全部重新处理", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 20)
+            }
+        }
+    }
+
+    // MARK: - Processing Progress View
+
+    private var processingProgressView: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(aiCoordinator.currentStage.displayName)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.primary)
+
+                if !aiCoordinator.progressDetail.isEmpty {
+                    Text(aiCoordinator.progressDetail)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            // Chunk progress bar for ASR stage
+            if case .asr(let current, let total) = aiCoordinator.currentStage, total > 1 {
+                Spacer()
+                    .frame(width: 4)
+                ProgressView(value: Double(current), total: Double(total))
+                    .progressViewStyle(.linear)
+                    .frame(width: 60)
+            }
+        }
     }
 
     // MARK: - Transcript Tab
@@ -375,7 +421,7 @@ struct DetailView: View {
             if showStreamingView {
                 // Streaming Summary View (v1.1.0)
                 streamingSummaryContent()
-                    .task {
+                    .task(id: streamingTriggerID) {
                         await loadStreamingConfig()
                     }
             } else if !meta.summaryVersions.isEmpty {
@@ -402,6 +448,7 @@ struct DetailView: View {
                 config: config,
                 provider: provider
             )
+            .id(streamingTriggerID)  // Force fresh view + @State reset on each trigger
             .onDisappear {
                 // Reload summary when streaming view closes
                 loadSummary(for: recordingID)
@@ -611,9 +658,6 @@ struct DetailView: View {
         guard let url = audioURL else { return }
 
         Task {
-            isProcessing = true
-            processingStatus = String(localized: "status.transcribing")
-
             do {
                 let (_, _, versionId) = try await AIProcessingCoordinator.shared.transcribeOnly(audioURL: url, meetingID: recordingID)
                 selectedTranscriptVersionID = versionId
@@ -626,8 +670,7 @@ struct DetailView: View {
                 showErrorAlert = true
             }
 
-            isProcessing = false
-            processingStatus = ""
+            aiCoordinator.reset()
         }
     }
 
@@ -644,24 +687,25 @@ struct DetailView: View {
         runSummaryGenerationOnly(audioURL: url)
     }
 
+    /// Activate the streaming summary view and trigger config loading + auto-start
+    private func activateStreamingView() {
+        streamingConfig = nil
+        streamingProvider = nil
+        isLoadingStreamingConfig = true
+        showStreamingView = true
+        streamingTriggerID += 1  // Force .task(id:) to re-run
+        selectedTab = 1
+    }
+
     private func runSummaryGenerationOnly(audioURL: URL) {
         // v1.1.0: Check if streaming is enabled
         if enableStreamingSummary {
-            // Use streaming summary view
-            // Reset config state before showing to avoid race condition
-            streamingConfig = nil
-            streamingProvider = nil
-            isLoadingStreamingConfig = true
-            showStreamingView = true
-            selectedTab = 1
+            activateStreamingView()
             return
         }
 
         // Fall back to non-streaming generation
         Task {
-            isProcessing = true
-            processingStatus = String(localized: "status.generating")
-
             do {
                 let fullText = transcriptSegments.map { $0.text }.joined(separator: "\n")
 
@@ -687,18 +731,14 @@ struct DetailView: View {
                 showErrorAlert = true
             }
 
-            isProcessing = false
-            processingStatus = ""
+            aiCoordinator.reset()
         }
     }
 
     private func runFullProcessing(audioURL: URL) {
         Task {
-            isProcessing = true
-
             do {
-                processingStatus = "转录中..."
-
+                // Stage 1: ASR transcription
                 let (_, _, transcriptVersionId) = try await AIProcessingCoordinator.shared.transcribeOnly(
                     audioURL: audioURL,
                     meetingID: recordingID
@@ -710,8 +750,17 @@ struct DetailView: View {
                     loadTranscript(for: recordingID)
                 }
 
-                processingStatus = "生成纪要..."
+                // Stage 2: Summary generation
+                if enableStreamingSummary {
+                    // Streaming path: hand off to StreamingSummaryView
+                    await MainActor.run {
+                        aiCoordinator.reset()
+                        activateStreamingView()
+                    }
+                    return
+                }
 
+                // Non-streaming path: generate summary via coordinator
                 guard let meta = manager.get(id: recordingID),
                       let latestTranscript = meta.transcriptVersions.first(where: { $0.id == transcriptVersionId }) else {
                     throw AIProcessingError.noSourceTranscript
@@ -744,8 +793,7 @@ struct DetailView: View {
                 showErrorAlert = true
             }
 
-            isProcessing = false
-            processingStatus = ""
+            aiCoordinator.reset()
         }
     }
 
@@ -949,6 +997,11 @@ struct DetailView: View {
         summaryContent = nil
         selectedTranscriptVersionID = nil
         selectedSummaryVersionID = nil
+
+        // Reset streaming view state (don't carry over from previous recording)
+        showStreamingView = false
+        streamingConfig = nil
+        streamingProvider = nil
 
         loadAudio(for: newID)
         loadTranscript(for: newID)

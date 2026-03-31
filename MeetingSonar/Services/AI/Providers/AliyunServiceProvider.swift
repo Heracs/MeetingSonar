@@ -54,8 +54,14 @@ actor AliyunServiceProvider: CloudServiceProvider {
     func transcribe(
         audioData: Data,
         model: String,
-        prompt: String?
+        prompt: String?,
+        hotwords: [String]? = nil
     ) async throws -> CloudTranscriptionResult {
+        // Aliyun DashScope ASR does not support inline hotwords parameter.
+        // Future: Aliyun supports vocabulary_id via a separate vocabulary management API.
+        if let hotwords = hotwords, !hotwords.isEmpty {
+            LoggerService.shared.log(category: .ai, level: .debug, message: "[Aliyun] Hotwords not supported by this provider, ignoring \(hotwords.count) hotwords")
+        }
         let endpoint = "\(baseURL)/services/audio/asr/transcription"
         guard let url = URL(string: endpoint) else {
             throw CloudServiceError.invalidURL
@@ -162,11 +168,12 @@ actor AliyunServiceProvider: CloudServiceProvider {
         audioData: Data,
         model: String,
         prompt: String?,
+        hotwords: [String]? = nil,
         onProgress: (Double) -> Void
     ) async throws -> CloudTranscriptionResult {
         // 阿里云目前不支持流式 ASR，使用普通转录
         onProgress(0.5)
-        let result = try await transcribe(audioData: audioData, model: model, prompt: prompt)
+        let result = try await transcribe(audioData: audioData, model: model, prompt: prompt, hotwords: hotwords)
         onProgress(1.0)
         return result
     }
