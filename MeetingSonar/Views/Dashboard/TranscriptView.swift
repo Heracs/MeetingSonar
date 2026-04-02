@@ -8,75 +8,74 @@
 
 import SwiftUI
 
-/// View for displaying transcript lines with click-to-seek functionality.
-/// Implements F-7.1.
+/// Displays transcript segments with full text selection, click-to-seek timestamps,
+/// and active segment highlighting during audio playback.
+///
+/// Uses NSTextView (via SelectableTextView) to solve SwiftUI's cross-view
+/// text selection limitation. Timestamps are rendered as clickable links
+/// that trigger seek via the onSeek callback.
 struct TranscriptView: View {
     let segments: [TranscriptSegment]
     let currentTime: TimeInterval
     let onSeek: (TimeInterval) -> Void
-    
-    // Auto-scroll state
-    @State private var autoScroll: Bool = true
-    
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(segments) { segment in
-                        TranscriptRow(
-                            segment: segment,
-                            isActive: isSegmentActive(segment, currentTime: currentTime)
-                        )
-                        .id(segment.id) // Use stable ID for scrolling
-                        .onTapGesture {
-                            onSeek(segment.start)
-                        }
-                    }
-                }
-                .padding()
-            }
-            .onChange(of: currentTime) { time in
-                if autoScroll {
-                    if let activeSegment = segments.first(where: { time >= $0.start && time < $0.end }) {
-                        withAnimation {
-                            proxy.scrollTo(activeSegment.id, anchor: .center)
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    private func isSegmentActive(_ segment: TranscriptSegment, currentTime: TimeInterval) -> Bool {
-        return currentTime >= segment.start && currentTime < segment.end
-    }
-}
 
-struct TranscriptRow: View {
-    let segment: TranscriptSegment
-    let isActive: Bool
-    
+    private let builder = TranscriptAttributedStringBuilder()
+
+    /// Cached attributed string and per-segment ranges.
+    /// Rebuilt only when segments change, not on every currentTime update.
+    @State private var cachedContent: NSAttributedString = NSAttributedString()
+    @State private var cachedRanges: [NSRange] = []
+
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(formatTime(segment.start))
-                .font(.monospacedDigit(.caption)())
-                .foregroundColor(.secondary)
-                .frame(width: 45, alignment: .leading)
-            
-            Text(segment.text)
-                .font(.body)
-                .foregroundColor(isActive ? .accentColor : .primary)
-                .fontWeight(isActive ? .medium : .regular)
-                .fixedSize(horizontal: false, vertical: true)
+        let activeIndex = findActiveSegmentIndex()
+
+        SelectableTextView(
+            attributedString: cachedContent,
+            backgroundColor: .textBackgroundColor,
+            highlightRange: activeIndex.flatMap { cachedRanges.indices.contains($0) ? cachedRanges[$0] : nil },
+            scrollToRange: activeIndex.flatMap { cachedRanges.indices.contains($0) ? cachedRanges[$0] : nil },
+            onLinkClick: { url in
+                if let time = TranscriptAttributedStringBuilder.seekTime(from: url) {
+                    onSeek(time)
+                }
+            }
+        )
+        .onChange(of: segments) { newSegments in
+            rebuildContent(from: newSegments)
         }
-        .padding(8)
-        .background(isActive ? Color.accentColor.opacity(0.1) : Color.clear)
-        .cornerRadius(6)
+        .onAppear {
+            rebuildContent(from: segments)
+        }
     }
-    
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let mm = Int(seconds) / 60
-        let ss = Int(seconds) % 60
-        return String(format: "%02d:%02d", mm, ss)
+
+    /// Finds the active segment index for the current playback time.
+    /// Handles ASR data where segments may have zero duration (start == end)
+    /// by using the next segment's start time as the effective end boundary.
+    private func findActiveSegmentIndex() -> Int? {
+        for i in segments.indices {
+            let start = segments[i].start
+            let end: TimeInterval
+            if segments[i].end > segments[i].start {
+                // Normal segment with duration
+                end = segments[i].end
+            } else if i + 1 < segments.count {
+                // Zero-duration segment: use next segment's start as boundary
+                end = segments[i + 1].start
+            } else {
+                // Last segment with zero duration: match anything >= start
+                return currentTime >= start ? i : nil
+            }
+            if currentTime >= start && currentTime < end {
+                return i
+            }
+        }
+        return nil
+    }
+
+    /// Rebuilds the cached attributed string and ranges when segments change.
+    private func rebuildContent(from segments: [TranscriptSegment]) {
+        let (content, ranges) = builder.buildWithRanges(from: segments)
+        cachedContent = content
+        cachedRanges = ranges
     }
 }

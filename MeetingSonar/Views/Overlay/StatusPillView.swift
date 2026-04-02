@@ -1,119 +1,190 @@
 import SwiftUI
 
-/// Status pill view for recording overlay with audio source control
-/// v1.0 - Recording Scenario Optimization: Added dropdown menu for real-time audio source toggling
+/// Two-state recording status overlay using fixed-panel approach.
+/// The NSPanel size is fixed at the maximum (expanded) dimensions.
+/// SwiftUI handles all visual transitions internally — the pill content
+/// with its background/shadow is positioned at `.bottomLeading` within
+/// the transparent panel, growing from bottom-left toward upper-right.
 struct StatusPillView: View {
     let duration: TimeInterval
     let isPaused: Bool
-
-    // MARK: - Audio Source State (v1.0)
-    //
-    // Purpose: Receive current audio source state for display and menu state
-    //
-    // Why needed:
-    // 1. Need to display which audio sources are currently recording (via icons)
-    // 2. Menu toggles need to bind to actual state
     let includeSystemAudio: Bool
     let includeMicrophone: Bool
 
-    // MARK: - Callbacks
-    //
-    // onToggleSystemAudio and onToggleMicrophone are new callbacks
-    // Called when user toggles audio sources in the menu, passed to RecordingService
-    var onTap: () -> Void
-    var onClose: () -> Void
-    var onToggleSystemAudio: (Bool) -> Void  // v1.0: Toggle system audio callback
-    var onToggleMicrophone: (Bool) -> Void   // v1.0: Toggle microphone callback
+    /// External expand request from the controller (e.g. auto-expand on recording start).
+    let isExpandedByController: Bool
 
-    @State private var isHovering = false
+    // MARK: - Callbacks
+    var onClose: () -> Void
+    var onToggleSystemAudio: (Bool) -> Void
+    var onToggleMicrophone: (Bool) -> Void
+    var onPause: () -> Void
+    var onResume: () -> Void
+    var onHoverChanged: (Bool) -> Void
+
+    /// Tracks whether mouse is inside the visible content area.
+    @State private var isMouseInside = false
+    @State private var collapseTask: Task<Void, Never>?
+
+    /// Merged expand state: expanded if controller says so OR mouse is hovering.
+    private var isExpanded: Bool {
+        isExpandedByController || isMouseInside
+    }
+
+    // MARK: - Layout Constants
+
+    /// Fixed panel size (always the expanded maximum). The NSPanel
+    /// is created at this size and never changes.
+    static let panelWidth: CGFloat = 230
+    static let panelHeight: CGFloat = 200
 
     private var timeString: String {
         let hours = Int(duration) / 3600
         let minutes = Int(duration) / 60 % 60
         let seconds = Int(duration) % 60
         if hours > 0 {
-            return String(format: "%02i:%02i:%02i", hours, minutes, seconds)
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
         } else {
-            return String(format: "%02i:%02i", minutes, seconds)
+            return String(format: "%02d:%02d", minutes, seconds)
         }
+    }
+
+    private var indicatorColor: Color {
+        isPaused ? .orange : .red
     }
 
     var body: some View {
-        // Use Menu to implement dropdown functionality
-        // MenuStyle set to borderlessButton so overall appearance is like a normal button
-        Menu {
-            // MARK: - Audio Source Control Section
-            Section("settings.recording.audioSources") {
-                // System Audio Toggle
-                // Use Binding to associate Toggle state with passed properties and callbacks
-                Toggle("settings.audio.systemAudio",
-                       isOn: Binding(
-                           get: { includeSystemAudio },
-                           set: { onToggleSystemAudio($0) }
-                       ))
-
-                // Microphone Toggle
-                Toggle("settings.audio.microphone",
-                       isOn: Binding(
-                           get: { includeMicrophone },
-                           set: { onToggleMicrophone($0) }
-                       ))
-            }
-
-            Divider()
-
-            // Stop Recording button
-            // Use destructive role to show in red, indicating this is a terminating action
-            Button(role: .destructive) {
-                onClose()
-            } label: {
-                Label("recording.stop", systemImage: "stop.fill")
-            }
-        } label: {
-            // Menu button appearance (pillContent)
-            pillContent
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden) // Hide default dropdown arrow, custom appearance
+        // The pill content — sized naturally by its content,
+        // with background and shape applied directly.
+        pillContent
+            // Position at bottom-left of the fixed-size panel.
+            .frame(
+                width: Self.panelWidth,
+                height: Self.panelHeight,
+                alignment: .bottomLeading
+            )
     }
 
-    /// Pill appearance content
-    /// Contains: Status indicator dot, audio source icons, duration, dropdown arrow
+    /// The visible pill: a VStack with background, corners, and shadow.
+    /// Its size changes naturally based on `isExpanded`.
     private var pillContent: some View {
-        HStack(spacing: 8) {
-            // Recording indicator: red/orange dot with microphone icon
-            HStack(spacing: 5) {
-                // Recording status indicator using SF Symbol for reliable color rendering in Menu labels
-                Image(systemName: isPaused ? "pause.circle.fill" : "record.circle")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(isPaused ? Color.orange : Color.red)
-                    .symbolRenderingMode(.hierarchical)
+        VStack(spacing: 0) {
+            if isExpanded {
+                actionButtons
+                    .padding(.vertical, 8)
 
-                // Microphone icon as universal recording indicator
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 12))
-                    .foregroundColor(isPaused ? .orange : .red)
+                Divider()
+                    .padding(.horizontal, 8)
+
+                audioToggles
+                    .padding(.vertical, 6)
+
+                Divider()
+                    .padding(.horizontal, 8)
             }
 
-            // Duration display
-            Text(isPaused ? "Paused: \(timeString)" : "Recording: \(timeString)")
-                .font(.system(size: 14, weight: .medium, design: .monospaced))
-
-            // Dropdown indicator arrow
-            Image(systemName: "chevron.down")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
+            statusRow
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(minWidth: 200)
+        .padding(.vertical, isExpanded ? 10 : 8)
         .background(.ultraThinMaterial)
-        .cornerRadius(16)
+        .cornerRadius(isExpanded ? 12 : 20)
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: isExpanded ? 12 : 20)
                 .stroke(Color.white.opacity(0.1), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
+        .fixedSize()
+        .onHover { hovering in
+            if hovering {
+                collapseTask?.cancel()
+                collapseTask = nil
+                isMouseInside = true
+                onHoverChanged(true)
+            } else {
+                collapseTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    guard !Task.isCancelled else { return }
+                    isMouseInside = false
+                    onHoverChanged(false)
+                }
+            }
+        }
+        // Animate expand/collapse driven by the merged isExpanded computed property.
+        .animation(.easeInOut(duration: 0.25), value: isExpanded)
+    }
+
+    // MARK: - Status Row (always visible)
+
+    private var statusRow: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(indicatorColor)
+                .frame(width: 10, height: 10)
+                .shadow(color: indicatorColor.opacity(0.6), radius: 4)
+
+            Text(isPaused ? "Paused" : "Rec")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.secondary)
+
+            Text(timeString)
+                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                .foregroundColor(.primary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Audio Source Toggles
+
+    private var audioToggles: some View {
+        VStack(spacing: 4) {
+            Toggle(isOn: Binding(
+                get: { includeSystemAudio },
+                set: { onToggleSystemAudio($0) }
+            )) {
+                Label("settings.audio.systemAudio", systemImage: "speaker.wave.2")
+                    .font(.system(size: 12))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            Toggle(isOn: Binding(
+                get: { includeMicrophone },
+                set: { onToggleMicrophone($0) }
+            )) {
+                Label("settings.audio.microphone", systemImage: "mic")
+                    .font(.system(size: 12))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Action Buttons
+
+    private var actionButtons: some View {
+        HStack(spacing: 8) {
+            Button(action: { isPaused ? onResume() : onPause() }) {
+                Label(
+                    isPaused ? "recording.resume" : "recording.pause",
+                    systemImage: isPaused ? "play.fill" : "pause.fill"
+                )
+                .font(.system(size: 12, weight: .medium))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button(role: .destructive, action: onClose) {
+                Label("recording.stop", systemImage: "stop.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 4)
     }
 }
 
@@ -122,43 +193,35 @@ struct StatusPillView: View {
 struct StatusPillView_Previews: PreviewProvider {
     static var previews: some View {
         VStack(spacing: 20) {
-            // Preview with both sources
             StatusPillView(
                 duration: 125,
                 isPaused: false,
                 includeSystemAudio: true,
                 includeMicrophone: true,
-                onTap: {},
+                isExpandedByController: false,
                 onClose: {},
                 onToggleSystemAudio: { _ in },
-                onToggleMicrophone: { _ in }
+                onToggleMicrophone: { _ in },
+                onPause: {},
+                onResume: {},
+                onHoverChanged: { _ in }
             )
 
-            // Preview with system audio only
             StatusPillView(
                 duration: 3605,
-                isPaused: false,
-                includeSystemAudio: true,
-                includeMicrophone: false,
-                onTap: {},
-                onClose: {},
-                onToggleSystemAudio: { _ in },
-                onToggleMicrophone: { _ in }
-            )
-
-            // Preview paused
-            StatusPillView(
-                duration: 60,
                 isPaused: true,
                 includeSystemAudio: true,
-                includeMicrophone: true,
-                onTap: {},
+                includeMicrophone: false,
+                isExpandedByController: true,
                 onClose: {},
                 onToggleSystemAudio: { _ in },
-                onToggleMicrophone: { _ in }
+                onToggleMicrophone: { _ in },
+                onPause: {},
+                onResume: {},
+                onHoverChanged: { _ in }
             )
         }
-        .padding()
-        .background(Color.gray)
+        .padding(40)
+        .background(Color.gray.opacity(0.3))
     }
 }

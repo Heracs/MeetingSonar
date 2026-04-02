@@ -8,19 +8,19 @@
 
 import SwiftUI
 
-/// View for displaying Markdown summary with full block-level rendering.
+/// Displays meeting summary markdown with full text selection support.
+/// Uses NSTextView (via SelectableTextView) to enable Cmd+A and cross-paragraph selection.
 @available(macOS 13.0, *)
 struct SummaryView: View {
     let content: String
 
+    private let renderer = MarkdownAttributedStringRenderer()
+
     var body: some View {
-        ScrollView {
-            MarkdownContentView(content: content)
-                .font(.body)
-                .lineSpacing(4)
-                .padding()
-        }
-        .background(Color(nsColor: .textBackgroundColor))
+        SelectableTextView(
+            attributedString: renderer.render(content),
+            backgroundColor: .textBackgroundColor
+        )
         .cornerRadius(8)
     }
 }

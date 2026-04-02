@@ -2,12 +2,40 @@ import Cocoa
 import SwiftUI
 import Combine
 
+/// NSPanel subclass that can become key window and guards against
+/// NSHostingView's auto-resize (`updateAnimatedWindowSize`) which can
+/// cause Auto Layout constraint cycles in borderless panels.
+private class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+
+    /// Only allows frame/size changes when set to `true`.
+    /// Blocks unsolicited resizes from NSHostingView during layout.
+    var allowResize = false
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        guard allowResize else { return }
+        super.setFrame(frameRect, display: flag)
+    }
+
+    override func setFrame(_ frameRect: NSRect, display displayFlag: Bool, animate animateFlag: Bool) {
+        guard allowResize else { return }
+        super.setFrame(frameRect, display: displayFlag, animate: animateFlag)
+    }
+
+    override func setContentSize(_ size: NSSize) {
+        guard allowResize else { return }
+        super.setContentSize(size)
+    }
+}
+
 class OverlayState: ObservableObject {
     @Published var duration: TimeInterval = 0
     @Published var isPaused: Bool = false
     @Published var isDismissed: Bool = false  // F-9.2: User dismissed the pill
     @Published var includeSystemAudio: Bool = true   // v1.0: Current audio source state
     @Published var includeMicrophone: Bool = true    // v1.0: Current audio source state
+    /// Drives expand/collapse from the controller (e.g. auto-expand on recording start).
+    @Published var isExpandedByController: Bool = false
 }
 
 @MainActor
@@ -22,6 +50,10 @@ class OverlayWindowController: NSObject {
     // MARK: - State
     private var overlayState = OverlayState()
     private var dismissTimer: Timer?
+    /// Collapsed-state opacity. Semi-transparent to stay unobtrusive.
+    private static let collapsedAlpha: CGFloat = 0.4
+    /// Timer for auto-collapsing the pill after initial expanded display.
+    private var autoCollapseTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
     
     // MARK: - Initialization
@@ -71,19 +103,36 @@ class OverlayWindowController: NSObject {
     func showStatusPill() {
         // F-9.2: Don't show if user dismissed
         guard !overlayState.isDismissed else { return }
-        
+
         ensureStatusPanelCreated()
         positionStatusPanel()
-        
+
+        // Show in expanded state (replaces the old StartOverlayView).
+        overlayState.isExpandedByController = true
         statusPanel?.alphaValue = 0
         statusPanel?.orderFront(nil)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.3
             statusPanel?.animator().alphaValue = 1
         }
+
+        // Auto-collapse after 5 seconds if user doesn't interact.
+        autoCollapseTimer?.invalidate()
+        autoCollapseTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            self.overlayState.isExpandedByController = false
+            // Fade to semi-transparent
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.5
+                self.statusPanel?.animator().alphaValue = Self.collapsedAlpha
+            }
+        }
     }
     
     func hideStatusPill() {
+        autoCollapseTimer?.invalidate()
+        autoCollapseTimer = nil
+        overlayState.isExpandedByController = false
         guard let panel = statusPanel else { return }
         
         NSAnimationContext.runAnimationGroup({ context in
@@ -160,7 +209,7 @@ class OverlayWindowController: NSObject {
                     self.overlayState.includeMicrophone = config.includeMicrophone
                     self.overlayState.isPaused = false
                     self.overlayState.isDismissed = false  // F-9.2: Reset dismiss state on new recording
-                    self.showStartOverlay()
+                    // Pill shows in expanded state (replaces StartOverlayView)
                     self.showStatusPill()
                 }
             }
@@ -169,7 +218,6 @@ class OverlayWindowController: NSObject {
         NotificationCenter.default.publisher(for: .recordingDidStop)
             .sink { [weak self] _ in
                 DispatchQueue.main.async {
-                    self?.hideStartOverlay()
                     self?.hideStatusPill()
                 }
             }
@@ -186,9 +234,8 @@ class OverlayWindowController: NSObject {
             
         NotificationCenter.default.publisher(for: .recordingDidPause)
             .sink { [weak self] _ in
-                DispatchQueue.main.async { 
-                    self?.overlayState.isPaused = true 
-                    self?.updateStatusPanelLayout() // Resize and reposition
+                DispatchQueue.main.async {
+                    self?.overlayState.isPaused = true
                 }
             }
             .store(in: &cancellables)
@@ -197,7 +244,6 @@ class OverlayWindowController: NSObject {
             .sink { [weak self] _ in
                 DispatchQueue.main.async {
                     self?.overlayState.isPaused = false
-                    self?.updateStatusPanelLayout() // Resize and reposition
                 }
             }
             .store(in: &cancellables)
@@ -230,11 +276,10 @@ class OverlayWindowController: NSObject {
         })
         
         panel.contentViewController = NSHostingController(rootView: view)
-        // Set initial frame size based on view fitting size
         if let viewSize = panel.contentViewController?.view.fittingSize {
-            panel.setContentSize(viewSize)
+            withResize(of: panel) { $0.setContentSize(viewSize) }
         }
-        
+
         startPanel = panel
     }
     
@@ -243,18 +288,35 @@ class OverlayWindowController: NSObject {
 
         let panel = createBasePanel()
 
-        // F-9.2: Inject state with close callback
-        let wrappedView = StatusPillWrapper(state: overlayState, onTap: {
-            self.handlePillClick()
-        }, onClose: {
+        let wrappedView = StatusPillWrapper(state: overlayState, onClose: {
             self.requestStopRecording()
             self.dismissStatusPill()
+        }, onHoverChanged: { [weak self] isHovering in
+            guard let self = self else { return }
+            if isHovering {
+                // Cancel auto-collapse if user interacts during initial display
+                self.autoCollapseTimer?.invalidate()
+                self.autoCollapseTimer = nil
+                // Restore full opacity when user interacts
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.2
+                    self.statusPanel?.animator().alphaValue = 1.0
+                }
+            } else {
+                // Fade to semi-transparent after hover ends
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.5
+                    self.statusPanel?.animator().alphaValue = Self.collapsedAlpha
+                }
+            }
         })
 
         panel.contentViewController = NSHostingController(rootView: wrappedView)
-        if let viewSize = panel.contentViewController?.view.fittingSize {
-            panel.setContentSize(viewSize)
-        }
+        // Fixed panel size: always the expanded maximum.
+        // SwiftUI handles visual expand/collapse internally via clipping.
+        let fixedSize = NSSize(width: StatusPillView.panelWidth, height: StatusPillView.panelHeight)
+        // Panel is transparent — only the SwiftUI pill content is visible.
+        withResize(of: panel) { $0.setContentSize(fixedSize) }
 
         statusPanel = panel
     }
@@ -271,7 +333,7 @@ class OverlayWindowController: NSObject {
 
         panel.contentViewController = NSHostingController(rootView: view)
         if let viewSize = panel.contentViewController?.view.fittingSize {
-            panel.setContentSize(viewSize)
+            withResize(of: panel) { $0.setContentSize(viewSize) }
         }
 
         remindPanel = panel
@@ -284,7 +346,7 @@ class OverlayWindowController: NSObject {
     }
     
     private func createBasePanel() -> NSPanel {
-        let panel = NSPanel(
+        let panel = KeyablePanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel], // Important: nonactivatingPanel prevents focus stealing
             backing: .buffered,
@@ -299,53 +361,56 @@ class OverlayWindowController: NSObject {
         return panel
     }
     
+    /// Performs a panel resize/reposition within the `allowResize` guard.
+    private func withResize(of panel: NSPanel?, _ body: (KeyablePanel) -> Void) {
+        guard let keyable = panel as? KeyablePanel else { return }
+        keyable.allowResize = true
+        body(keyable)
+        keyable.allowResize = false
+    }
+
     private func positionStartPanel() {
-        guard let panel = startPanel, let screen = NSScreen.main else { return }
-
+        guard let screen = NSScreen.main else { return }
         let screenRect = screen.visibleFrame
-        let panelSize = panel.frame.size
-
-        // Center Top: X = (ScreenWidth - PanelWidth) / 2, Y = ScreenHeight - TopPadding
-        let x = screenRect.minX + (screenRect.width - panelSize.width) / 2
-        let y = screenRect.maxY - 60 // 100px from top might be too low, let's try 60 (below menu bar)
-
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        withResize(of: startPanel) { panel in
+            let panelSize = panel.frame.size
+            let x = screenRect.minX + (screenRect.width - panelSize.width) / 2
+            let y = screenRect.maxY - 60
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        }
     }
 
     private func positionRemindPanel() {
-        guard let panel = remindPanel, let screen = NSScreen.main else { return }
-
+        guard let screen = NSScreen.main else { return }
         let screenRect = screen.visibleFrame
-        let panelSize = panel.frame.size
-
-        // Center Top: Same position as start panel
-        let x = screenRect.minX + (screenRect.width - panelSize.width) / 2
-        let y = screenRect.maxY - 60
-
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        withResize(of: remindPanel) { panel in
+            let panelSize = panel.frame.size
+            let x = screenRect.minX + (screenRect.width - panelSize.width) / 2
+            let y = screenRect.maxY - 60
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        }
     }
 
     private func positionStatusPanel() {
-        guard let panel = statusPanel, let screen = NSScreen.main else { return }
-        
+        guard let screen = NSScreen.main else { return }
         let screenRect = screen.visibleFrame
-        let panelSize = panel.frame.size
-        
-        // Bottom Right: X = ScreenMaxX - Width - Padding, Y = ScreenMinY + Padding
-        let x = screenRect.maxX - panelSize.width - 20
-        let y = screenRect.minY + 20
-        
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        // Bottom-left corner with padding.
+        let origin = NSPoint(x: screenRect.minX + 20, y: screenRect.minY + 20)
+        withResize(of: statusPanel) { panel in
+            panel.setFrameOrigin(origin)
+        }
     }
-    
+
+    /// Resizes panel to match current SwiftUI content size.
+    /// Preserves frame origin (bottom-left corner) so the pill
+    /// expands rightward and upward from its anchored position.
     private func updateStatusPanelLayout() {
-        guard let panel = statusPanel, let view = panel.contentViewController?.view else { return }
-        
-        // Force layout update to get new fitting size
+        guard let view = statusPanel?.contentViewController?.view else { return }
         let newSize = view.fittingSize
-        if newSize != .zero && newSize != panel.frame.size {
-            panel.setContentSize(newSize)
-            positionStatusPanel() // Re-calculate X based on new width
+        guard newSize != .zero else { return }
+        withResize(of: statusPanel) { panel in
+            let newFrame = NSRect(origin: panel.frame.origin, size: newSize)
+            panel.setFrame(newFrame, display: true)
         }
     }
     
@@ -359,47 +424,13 @@ class OverlayWindowController: NSObject {
         // Post notification that user accepted the reminder
         NotificationCenter.default.post(name: .startRecordingRequested, object: nil)
     }
-    
-    private func handlePillClick() {
-        let menu = NSMenu()
-        
-        // Stop
-        let stopItem = menu.addItem(withTitle: "Stop Recording", action: #selector(menuStopAction), keyEquivalent: "")
-        stopItem.target = self
-        
-        // Pause/Resume
-        let isPaused = overlayState.isPaused
-        let pauseTitle = isPaused ? "Resume Recording" : "Pause Recording"
-        let pauseAction = isPaused ? #selector(menuResumeAction) : #selector(menuPauseAction)
-        
-        let pauseItem = menu.addItem(withTitle: pauseTitle, action: pauseAction, keyEquivalent: "")
-        pauseItem.target = self
-        
-        // Show menu
-        if let event = NSApp.currentEvent {
-            NSMenu.popUpContextMenu(menu, with: event, for: statusPanel?.contentView ?? NSView())
-        }
-    }
-    
-    @objc private func menuStopAction() {
-        requestStopRecording()
-    }
-    
-    @objc private func menuPauseAction() {
-        RecordingService.shared.pauseRecording()
-    }
-    
-    @objc private func menuResumeAction() {
-        RecordingService.shared.resumeRecording()
-    }
 }
 
-// Wrapper to bridge ObservableObject to View
-// v1.0 - Recording Scenario Optimization: Added audio source state and toggle callbacks
+/// Bridges OverlayState (ObservableObject) to StatusPillView.
 struct StatusPillWrapper: View {
     @ObservedObject var state: OverlayState
-    var onTap: () -> Void
-    var onClose: () -> Void  // F-9.2: Close callback
+    var onClose: () -> Void
+    var onHoverChanged: (Bool) -> Void
 
     var body: some View {
         StatusPillView(
@@ -407,18 +438,17 @@ struct StatusPillWrapper: View {
             isPaused: state.isPaused,
             includeSystemAudio: state.includeSystemAudio,
             includeMicrophone: state.includeMicrophone,
-            onTap: onTap,
+            isExpandedByController: state.isExpandedByController,
             onClose: onClose,
             onToggleSystemAudio: { enabled in
-                Task {
-                    await RecordingService.shared.toggleSystemAudio(enabled)
-                }
+                Task { await RecordingService.shared.toggleSystemAudio(enabled) }
             },
             onToggleMicrophone: { enabled in
-                Task {
-                    await RecordingService.shared.toggleMicrophone(enabled)
-                }
-            }
+                Task { await RecordingService.shared.toggleMicrophone(enabled) }
+            },
+            onPause: { RecordingService.shared.pauseRecording() },
+            onResume: { RecordingService.shared.resumeRecording() },
+            onHoverChanged: onHoverChanged
         )
     }
 }

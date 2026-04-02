@@ -275,11 +275,16 @@ struct StreamingTextView: View {
     let isComplete: Bool
     let isStreaming: Bool
 
+    private let renderer = MarkdownAttributedStringRenderer()
+
     var body: some View {
         Group {
             if isComplete {
-                // Full block-level markdown rendering when complete
-                MarkdownContentView(content: text)
+                // Full markdown rendering with text selection via NSTextView
+                SelectableTextView(
+                    attributedString: renderer.render(text),
+                    backgroundColor: .clear
+                )
             } else {
                 // Plain text during streaming for better performance
                 Text(text)

@@ -14,9 +14,9 @@ struct RemindOverlayView: View {
 
             // Text
             VStack(alignment: .leading, spacing: 2) {
-                Text("Meeting Detected")
+                Text("overlay.remind.title")
                     .font(.system(size: 13, weight: .bold))
-                Text("Detected \(appName) meeting. Start recording?")
+                Text("overlay.remind.description.\(appName)")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -28,7 +28,7 @@ struct RemindOverlayView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "circle.fill")
                         .font(.system(size: 8))
-                    Text("Start")
+                    Text("overlay.remind.start")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .padding(.horizontal, 10)
@@ -53,12 +53,12 @@ struct RemindOverlayView: View {
         .padding(.vertical, 10)
         .frame(width: 360, height: 48)
         .background(.ultraThinMaterial)
-        .cornerRadius(24)
+        .cornerRadius(12)
         .overlay(
-            RoundedRectangle(cornerRadius: 24)
+            RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.white.opacity(0.1), lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
     }
 }
 

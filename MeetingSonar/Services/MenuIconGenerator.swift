@@ -166,23 +166,33 @@ class MenuIconGenerator {
         // Add a tiny stroke for separation if needed, or just fill.
     }
     
+    /// Draws a pause indicator using SF Symbol at the bottom-right corner of the icon.
     private func drawOrangeBars(in rect: NSRect) {
-        let barHeight = rect.height * 0.4
-        let barWidth = rect.width * 0.1
-        let spacing = barWidth * 0.8
-        
-        // Position at bottom right
-        let startX = rect.width - (barWidth * 2 + spacing) + 1
-        let startY = 1.0 // Bottom padding
-        
-        NSColor.systemOrange.setFill()
-        
-        // Bar 1
-        let bar1 = NSRect(x: startX, y: startY, width: barWidth, height: barHeight)
-        NSBezierPath(rect: bar1).fill()
-        
-        // Bar 2
-        let bar2 = NSRect(x: startX + barWidth + spacing, y: startY, width: barWidth, height: barHeight)
-        NSBezierPath(rect: bar2).fill()
+        let symbolSize = rect.width * 0.4
+        guard let pauseImage = NSImage(
+            systemSymbolName: "pause.circle.fill",
+            accessibilityDescription: "Paused"
+        ) else { return }
+
+        // Apply orange color via palette configuration (not NSColor.set which doesn't affect NSImage.draw)
+        let colorConfig = NSImage.SymbolConfiguration(paletteColors: [.systemOrange])
+        let sizeConfig = NSImage.SymbolConfiguration(pointSize: symbolSize, weight: .bold)
+        let combined = colorConfig.applying(sizeConfig)
+        let configured = pauseImage.withSymbolConfiguration(combined) ?? pauseImage
+        configured.isTemplate = false
+
+        // Draw at bottom-right corner
+        let drawSize = NSSize(width: symbolSize, height: symbolSize)
+        let origin = NSPoint(
+            x: rect.width - drawSize.width + 1,
+            y: -1
+        )
+
+        configured.draw(
+            in: NSRect(origin: origin, size: drawSize),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1.0
+        )
     }
 }
