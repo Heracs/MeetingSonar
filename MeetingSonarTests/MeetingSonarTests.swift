@@ -35,24 +35,23 @@ final class MeetingSonarTests: XCTestCase {
     func testDefaultSavePath() {
         // Verify default save path logic
         let path = settings.savePath
-        XCTAssertFalse(path.path.isEmpty)
-        // Should default to Music/MeetingSonar or similar
-        XCTAssertTrue(path.path.contains("MeetingSonar"))
+        XCTAssertFalse(path.path.isEmpty, "Default save path should not be empty")
+        // Default save path is the user's Documents directory (sandbox fallback)
+        XCTAssertTrue(path.path.contains("Documents"), "Default save path should be under Documents directory: \(path.path)")
     }
     
     func testAudioQualityPersistence() {
-        // Change quality
+        // Change quality to low
         settings.audioQuality = .low
         XCTAssertEqual(settings.audioQuality, .low)
-        
-        // Change to medium
-        settings.audioQuality = .medium
-        XCTAssertEqual(settings.audioQuality, .medium)
-        
+
+        // Change to high
+        settings.audioQuality = .high
+        XCTAssertEqual(settings.audioQuality, .high)
+
         // Verify User Defaults
-        // Key defined in SettingsManager is "audioQuality" (camelCase)
         let rawVal = UserDefaults.standard.string(forKey: "audioQuality")
-        XCTAssertEqual(rawVal, AudioQuality.medium.rawValue)
+        XCTAssertEqual(rawVal, AudioQuality.high.rawValue)
     }
 
     // MARK: - LoggerService Tests

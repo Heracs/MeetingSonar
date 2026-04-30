@@ -123,6 +123,20 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
 
     // MARK: - Per-App Detection Settings
 
+    /// Check if detection is enabled for a specific app by bundle ID
+    func isAppDetectionEnabled(bundleID: String) -> Bool {
+        switch bundleID {
+        case "us.zoom.xos": return detectZoom
+        case "com.microsoft.teams": return detectTeamsClassic
+        case "com.microsoft.teams2": return detectTeamsNew
+        case "com.cisco.webex.webex": return detectWebex
+        case "com.tencent.meeting": return detectTencentMeeting
+        case "com.electron.lark.iron": return detectFeishu
+        case "com.tencent.xinWeChat": return detectWeChat
+        default: return false
+        }
+    }
+
     // MARK: Western Apps
 
     /// Enable Zoom detection
@@ -160,6 +174,17 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
 
     /// Enable WeChat voice call detection (default: false for privacy)
     @AppStorage("detectWeChat") var detectWeChat: Bool = false
+
+    // MARK: - Max Recording Duration (F-0.11.x)
+
+    /// Maximum single recording duration in minutes (5–180, default 180)
+    @AppStorage("maxRecordingDurationMinutes") var maxRecordingDurationMinutes: Int = 180
+
+    /// Clamped max recording duration in seconds
+    var maxRecordingDurationSeconds: TimeInterval {
+        let clamped = min(max(maxRecordingDurationMinutes, 5), 180)
+        return TimeInterval(clamped) * 60
+    }
 
     // MARK: - Auto Processing Settings (F-0.10.4)
 
@@ -513,4 +538,12 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         // Load hotwords from data directory file (F-0.10.14)
         loadHotwordsFromFile()
     }
+}
+
+// MARK: - Detection Settings Notification
+
+extension Notification.Name {
+    /// Posted when any per-app detection setting or smartDetectionEnabled changes.
+    /// Observers: ApplicationMonitor, LogMonitorService, DetectionService
+    static let detectionSettingsDidChange = Notification.Name("DetectionSettingsDidChange")
 }

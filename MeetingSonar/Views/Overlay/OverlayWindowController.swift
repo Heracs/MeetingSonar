@@ -149,8 +149,8 @@ class OverlayWindowController: NSObject {
 
     // MARK: - Remind Overlay
 
-    func showRemindOverlay(appName: String) {
-        ensureRemindPanelCreated(appName: appName)
+    func showRemindOverlay(appName: String, mode: String = "remind", durationMinutes: Int = 180) {
+        ensureRemindPanelCreated(appName: appName, mode: mode, durationMinutes: durationMinutes)
 
         guard let panel = remindPanel else { return }
 
@@ -191,10 +191,13 @@ class OverlayWindowController: NSObject {
 
         // Listen for remind overlay request from DetectionService
         NotificationCenter.default.publisher(for: .showRemindOverlay)
-            .compactMap { $0.userInfo?["appName"] as? String }
-            .sink { [weak self] appName in
+            .sink { [weak self] notification in
+                guard let userInfo = notification.userInfo,
+                      let appName = userInfo["appName"] as? String else { return }
+                let mode = userInfo["mode"] as? String ?? "remind"
+                let durationMinutes = userInfo["durationMinutes"] as? Int ?? 180
                 DispatchQueue.main.async {
-                    self?.showRemindOverlay(appName: appName)
+                    self?.showRemindOverlay(appName: appName, mode: mode, durationMinutes: durationMinutes)
                 }
             }
             .store(in: &cancellables)
@@ -321,16 +324,23 @@ class OverlayWindowController: NSObject {
         statusPanel = panel
     }
 
-    private func ensureRemindPanelCreated(appName: String) {
-        if remindPanel != nil { return }
-
-        let panel = createBasePanel()
-        let view = RemindOverlayView(appName: appName, onStart: {
+    private func ensureRemindPanelCreated(appName: String, mode: String = "remind", durationMinutes: Int = 180) {
+        let view = RemindOverlayView(appName: appName, mode: mode, durationMinutes: durationMinutes, onStart: {
             self.handleRemindStartRecording()
         }, onDismiss: {
             self.hideRemindOverlay()
         })
 
+        if let panel = remindPanel {
+            // Panel already exists — update content view for the current mode.
+            panel.contentViewController = NSHostingController(rootView: view)
+            if let viewSize = panel.contentViewController?.view.fittingSize {
+                withResize(of: panel) { $0.setContentSize(viewSize) }
+            }
+            return
+        }
+
+        let panel = createBasePanel()
         panel.contentViewController = NSHostingController(rootView: view)
         if let viewSize = panel.contentViewController?.view.fittingSize {
             withResize(of: panel) { $0.setContentSize(viewSize) }

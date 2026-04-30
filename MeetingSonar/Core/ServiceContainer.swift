@@ -245,6 +245,9 @@ protocol SettingsManagerProtocol: AnyObject {
     /// Mode for smart detection
     var smartDetectionMode: SmartDetectionMode { get set }
 
+    /// Check if detection is enabled for a specific app by bundle ID
+    func isAppDetectionEnabled(bundleID: String) -> Bool
+
     /// Selected ASR model ID
     var selectedUnifiedASRId: String { get set }
 

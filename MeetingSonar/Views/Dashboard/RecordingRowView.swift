@@ -13,10 +13,20 @@ import SwiftUI
 struct RecordingRowView: View {
     let meta: MeetingMeta
     let isSelected: Bool
+    var isSelectionMode: Bool = false
+    var isChecked: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {
-            // Source Icon (NEW)
+            // Checkbox (multi-select mode, F-0.10.17)
+            if isSelectionMode {
+                Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundColor(isChecked ? .accentColor : .secondary)
+                    .animation(.easeInOut(duration: 0.15), value: isChecked)
+            }
+
+            // Source Icon
             SourceIcon(source: RecordingSource(from: meta.source), size: .medium)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -35,7 +45,7 @@ struct RecordingRowView: View {
                         .font(.caption)
                         .foregroundColor(.secondary.opacity(0.5))
 
-                    Text(relativeTime(from: meta.startTime))
+                    Text(absoluteTime(from: meta.startTime))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -71,10 +81,27 @@ struct RecordingRowView: View {
                     }
                 }
             }
+
+            // Drag handle (F-0.11.4) — isolated from row selection
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary.opacity(0.4))
+                .onDrag {
+                    let recordingsDir = PathManager.shared.recordingsURL
+                    let fileURL = recordingsDir.appendingPathComponent(meta.filename)
+                    guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                        return NSItemProvider()
+                    }
+                    return NSItemProvider(object: fileURL as NSURL)
+                }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
+        .background(
+            (isSelected || (isSelectionMode && isChecked))
+                ? Color.accentColor.opacity(0.1)
+                : Color.clear
+        )
         .contentShape(Rectangle())
     }
 
@@ -94,12 +121,11 @@ struct RecordingRowView: View {
         }
     }
 
-    /// 计算相对时间（如 "2分钟前"）
-    private func relativeTime(from date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        formatter.dateTimeStyle = .named
-        return formatter.localizedString(for: date, relativeTo: Date())
+    /// 显示录音开始的绝对时间（如 "2026/04/30 12:05"）
+    private func absoluteTime(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy/MM/dd HH:mm"
+        return formatter.string(from: date)
     }
 }
 

@@ -1,6 +1,47 @@
 import Foundation
 import Combine
 
+// MARK: - Detection State Machine Types
+
+enum DetectionState: Equatable {
+    case monitoringAll(suppressedApps: Set<String>)
+    case recordingLocked(RecordingContext)
+    case cooldown(CooldownContext)
+}
+
+struct RecordingContext: Equatable {
+    let triggerAppBundleID: String
+    let triggerAppName: String
+    let triggerSource: TriggerSource
+    let triggerTimestamp: Date
+}
+
+enum TriggerSource: String, Equatable {
+    case windowTitle
+    case micUsage
+    case manual
+    case reminderAccepted
+}
+
+struct CooldownContext: Equatable {
+    let reason: CooldownReason
+    let triggerAppBundleID: String?
+    let triggerAppName: String?
+    let triggerType: TriggerSource?
+    let recordingDuration: TimeInterval?
+    var suppressedApps: Set<String>
+    let cooldownStartTime: Date
+    let cooldownDuration: TimeInterval
+}
+
+enum CooldownReason: String, Equatable {
+    case autoStop
+    case manualStop
+    case maxDuration
+    case appCrashed
+    case appDisabled
+}
+
 /// Coordinator for Smart Awareness features (F-2.2)
 @MainActor
 class DetectionService: ObservableObject, DetectionServiceProtocol {
@@ -17,15 +58,24 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
 
     private var cancellables = Set<AnyCancellable>()
 
-    /// Timer for checking mic status if needed (though LogMonitor is push-based)
-    private var stopDebounceTimer: Timer?
-    private let debounceInterval: TimeInterval = 2.0
+    /// Current state of the detection state machine
+    @Published private(set) var detectionState: DetectionState = .monitoringAll(suppressedApps: [])
 
-    /// Manual stop suppression: prevents auto-start for a cooldown period after user manually stops recording.
-    /// This avoids false re-triggers caused by Teams afterglow signals (~600ms post-meeting-end).
-    private var manualStopSuppressed: Bool = false
-    private var suppressionLiftTimer: Timer?
-    private let suppressionCooldown: TimeInterval = 5.0
+    /// Consecutive no-signal polling cycles for auto-stop debounce
+    private var consecutiveNoSignalCount: Int = 0
+    /// Consecutive active-signal cycles before resetting the stop debounce (reverse hysteresis)
+    private var reverseDebounceCount: Int = 0
+    private let debounceThreshold: Int = 2
+
+    /// Cooldown configuration
+    private let cooldownDuration: TimeInterval = 5.0
+
+    /// Timer for cooldown exit
+    private var cooldownTimer: Timer?
+
+    /// Timer for periodic signal re-evaluation during recording (Issue 2 fix).
+    /// Ensures auto-stop detection even when LogMonitor misses CoreAudio mic-off events.
+    private var recordingEvalTimer: Timer?
 
     /// Test mode flag
     private let testMode: Bool
@@ -126,81 +176,378 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     }
     
     private func setupSubscriptions() {
-        // Listen to ApplicationMonitor state changes
-        // Combine with LogMonitor changes.
-        // We want to react if EITHER changes.
-        
-        Publishers.CombineLatest(appMonitor.$meetingState, logMonitor.$activeMicUsers)
+        Publishers.CombineLatest(appMonitor.$activeMeetingApps, logMonitor.$activeMicUsers)
             .receive(on: RunLoop.main)
-            .sink { [weak self] (appState, activeMicUsers) in
+            .sink { [weak self] (activeMeetingApps, activeMicUsers) in
                 Task { @MainActor [weak self] in
-                    self?.evaluateMeetingStatus(appState: appState, activeMicUsers: activeMicUsers)
+                    self?.evaluateMeetingSignals(activeMeetingApps: activeMeetingApps, activeMicUsers: activeMicUsers)
                 }
             }
             .store(in: &cancellables)
-            
-        // Listen for Recording Stopped event to send "Saved" notification
+
         NotificationCenter.default.publisher(for: .recordingDidStop)
             .sink { [weak self] notification in
                 self?.handleRecordingStopped(notification)
             }
             .store(in: &cancellables)
+
+        // LogMonitor dynamic reconfiguration on settings change
+        NotificationCenter.default.publisher(for: .detectionSettingsDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.logMonitor.reconfigure(apps: self?.appMonitor.enabledApps ?? [])
+                LoggerService.shared.log(category: .detection, level: .info, message: "[DetectionService] LogMonitor reconfigured due to settings change")
+            }
+            .store(in: &cancellables)
     }
 
-    // New evaluation logic combining AppMonitor state and Log-based Mic state
+    // MARK: - Signal Evaluation
+
+    /// Evaluates meeting signals from both ApplicationMonitor (window titles) and
+    /// LogMonitorService (mic usage) and transitions the detection state machine.
     @MainActor
-    private func evaluateMeetingStatus(appState: ApplicationMonitor.MeetingState, activeMicUsers: Set<String>) {
+    private func evaluateMeetingSignals(activeMeetingApps: Set<String>, activeMicUsers: Set<String>) {
         guard settings.smartDetectionEnabled else { return }
 
-        let hasMicUser = findMonitoredAppUsingMic(activeMicUsers)
+        logger.log(category: .detection, level: .debug, message: """
+            [DetectionService] evaluateMeetingSignals
+            ├─ state: \(detectionState)
+            ├─ activeMeetingApps: \(activeMeetingApps)
+            ├─ activeMicUsers: \(activeMicUsers)
+            └─ isRecording: \(recordingService.isRecording)
+            """)
 
-        // Manual stop suppression lifecycle:
-        // - Activated when user manually stops recording
-        // - Stays active as long as any mic signal exists (meeting still going)
-        // - Starts cooldown timer only when ALL mic signals disappear
-        // - Lifted after cooldown expires with no new mic signals
-        if manualStopSuppressed {
-            if hasMicUser != nil {
-                // Meeting still active — cancel any pending lift, keep suppressing
-                suppressionLiftTimer?.invalidate()
-                suppressionLiftTimer = nil
-            } else if suppressionLiftTimer == nil {
-                // All mic signals gone — start cooldown to lift suppression
-                scheduleSuppressionLift()
+        switch detectionState {
+        case .monitoringAll(let suppressedApps):
+            for bundleID in activeMeetingApps {
+                if let state = appMonitor.appStates[bundleID],
+                   case .inMeeting = state.meetingState {
+                    let app = state.config
+                    guard !suppressedApps.contains(bundleID) else {
+                        logger.log(category: .detection, level: .debug, message: "[Decision] triggerApp \(app.processName) is in suppressedApps, ignoring")
+                        return
+                    }
+                    // FIXME(Task 9): settings.isAppDetectionEnabled(bundleID:) not yet implemented
+                    if settings.isAppDetectionEnabled(bundleID: bundleID) {
+                        handleMeetingDetected(appName: app.processName, bundleID: bundleID, source: .windowTitle)
+                        return
+                    }
+                }
             }
-            // While suppressed, don't trigger any auto-start
-            // But still allow auto-stop if recording (shouldn't happen, but safe)
-            if recordingService.isRecording && hasMicUser == nil {
-                scheduleAutoStop()
+
+            if let micApp = findMonitoredAppUsingMic(activeMicUsers) {
+                guard !suppressedApps.contains(micApp.bundleIdentifier) else {
+                    logger.log(category: .detection, level: .debug, message: "[Decision] micApp \(micApp.processName) is in suppressedApps, ignoring")
+                    return
+                }
+                handleMeetingDetected(appName: micApp.processName, bundleID: micApp.bundleIdentifier, source: .micUsage)
+                return
             }
+
+        case .recordingLocked(let ctx):
+            evaluateDuringRecording(context: ctx)
+
+        case .cooldown:
+            break
+        }
+    }
+
+    /// Evaluates window and mic signals during an active recording to determine
+    /// whether auto-stop should be triggered.
+    /// - Parameter context: The current recording context
+    /// Minimum recording duration (seconds) before auto-stop evaluation begins.
+    /// Prevents premature stop due to signal gaps during recording initialization.
+    private let minRecordingDurationBeforeAutoStop: TimeInterval = 10.0
+
+    @MainActor
+    private func evaluateDuringRecording(context: RecordingContext) {
+        // Skip auto-stop until recording has been running long enough to stabilize signals.
+        let elapsed = Date().timeIntervalSince(context.triggerTimestamp)
+        guard elapsed >= minRecordingDurationBeforeAutoStop else {
+            consecutiveNoSignalCount = 0
+            reverseDebounceCount = 0
             return
         }
 
-        // 1. Priority Check: Is ANY monitored app using the Microphone?
-        if let micUser = hasMicUser {
-            logger.log(category: .detection, message: "Mic usage detected globally: \(micUser.processName)")
-            handleMeetingDetected(appName: micUser.processName)
+        let hasWindowSignal: Bool = {
+            if let state = appMonitor.appStates[context.triggerAppBundleID],
+               case .inMeeting = state.meetingState {
+                return true
+            }
+            return false
+        }()
+
+        let hasWindowPatterns: Bool = {
+            appMonitor.appStates[context.triggerAppBundleID]?.config.meetingWindowPatterns.isEmpty == false
+        }()
+
+        let hasMicSignal: Bool = {
+            if let state = appMonitor.appStates[context.triggerAppBundleID] {
+                let config = state.config
+                return logMonitor.activeMicUsers.contains { name in
+                    name == config.processName || config.logProcessAliases.contains(name)
+                }
+            }
+            return false
+        }()
+
+        // Window-based debounce only applies when the meeting was detected via window title.
+        // For mic-triggered recordings (window never matched), rely solely on mic signal.
+        let useWindowSignal = context.triggerSource == .windowTitle && hasWindowPatterns
+        let windowGone = useWindowSignal && !hasWindowSignal
+        let micGone = !hasMicSignal
+        let signalsActive = (!windowGone) && (!micGone)
+
+        logger.log(category: .detection, level: .debug, message: """
+            [Decision] evaluateDuringRecording for \(context.triggerAppName)
+            ├─ hasWindowSignal: \(hasWindowSignal) (patterns: \(hasWindowPatterns))
+            ├─ hasMicSignal: \(hasMicSignal) (activeMicUsers: \(logMonitor.activeMicUsers))
+            ├─ windowGone: \(windowGone), micGone: \(micGone)
+            ├─ signalsActive: \(signalsActive)
+            └─ consecutiveNoSignalCount: \(consecutiveNoSignalCount)/\(debounceThreshold)
+            """)
+
+        if !signalsActive {
+            consecutiveNoSignalCount += 1
+            reverseDebounceCount = 0
+            logger.log(category: .detection, level: .debug, message: "[Decision] autoStopDebounce: \(consecutiveNoSignalCount)/\(debounceThreshold) no-signal cycles for \(context.triggerAppName)")
+
+            if consecutiveNoSignalCount >= debounceThreshold {
+                let duration = Date().timeIntervalSince(context.triggerTimestamp)
+                let cooldownCtx = CooldownContext(
+                    reason: .autoStop,
+                    triggerAppBundleID: context.triggerAppBundleID,
+                    triggerAppName: context.triggerAppName,
+                    triggerType: context.triggerSource,
+                    recordingDuration: duration,
+                    suppressedApps: [],
+                    cooldownStartTime: Date(),
+                    cooldownDuration: cooldownDuration
+                )
+                transition(to: .cooldown(cooldownCtx))
+                scheduleCooldownExit(context: cooldownCtx)
+                consecutiveNoSignalCount = 0
+            }
+        } else {
+            // Reverse debounce: require sustained active signals before resetting the stop countdown.
+            // Prevents single-cycle flickers (e.g. post-meeting Zoom/Feishu windows) from
+            // resetting the auto-stop debounce.
+            reverseDebounceCount += 1
+            if reverseDebounceCount >= debounceThreshold {
+                consecutiveNoSignalCount = 0
+                reverseDebounceCount = 0
+            }
+        }
+    }
+
+    // MARK: - State Transitions
+
+    /// Executes a state machine transition with guard enforcement and side effects.
+    @MainActor
+    private func transition(to newState: DetectionState) {
+        let oldState = detectionState
+
+        guard canTransition(from: oldState, to: newState) else {
+            logger.log(category: .detection, level: .debug, message: "[Decision] transitionRejected: \(oldState) → \(newState)")
             return
         }
 
-        // 2. Secondary Check: Window Title matches (Legacy/Fallback)
-        switch appState {
-        case .inMeeting:
-            if let appName = appMonitor.currentMeetingApp?.processName {
-                handleMeetingDetected(appName: appName)
-            }
+        executeTransitionSideEffects(from: oldState, to: newState)
+        detectionState = newState
+        logStateTransition(from: oldState, to: newState)
+    }
 
-        case .running, .notRunning:
-            // No Mic AND No Window — safe to schedule stop
+    /// Guards transitions to ensure only valid state changes are allowed.
+    @MainActor
+    private func canTransition(from oldState: DetectionState, to newState: DetectionState) -> Bool {
+        switch (oldState, newState) {
+        case (.monitoringAll, .recordingLocked):
+            guard settings.smartDetectionEnabled else { return false }
+            guard settings.smartDetectionMode == .auto else { return false }
+            guard !recordingService.isRecording else { return false }
+            return true
+        case (.recordingLocked, .cooldown):
+            return true  // stopRecording is handled by executeTransitionSideEffects
+        case (.recordingLocked, .monitoringAll):
+            return !settings.smartDetectionEnabled
+        case (.cooldown, .monitoringAll):
+            return true
+        case (.cooldown, .recordingLocked):
+            return !recordingService.isRecording
+        default:
+            return false
+        }
+    }
+
+    /// Executes side effects required when transitioning between detection states.
+    @MainActor
+    private func executeTransitionSideEffects(from oldState: DetectionState, to newState: DetectionState) {
+        switch (oldState, newState) {
+        case (_, .cooldown):
+            consecutiveNoSignalCount = 0
+            reverseDebounceCount = 0
+            recordingEvalTimer?.invalidate()
+            recordingEvalTimer = nil
             if recordingService.isRecording {
-                scheduleAutoStop()
+                recordingService.stopRecording()
             }
+        case (_, .recordingLocked):
+            // Start periodic signal re-evaluation (Issue 2 fix)
+            recordingEvalTimer?.invalidate()
+            recordingEvalTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard case .recordingLocked(let ctx) = self?.detectionState else { return }
+                    self?.evaluateDuringRecording(context: ctx)
+                }
+            }
+        case (.recordingLocked, .monitoringAll):
+            recordingEvalTimer?.invalidate()
+            recordingEvalTimer = nil
+            if recordingService.isRecording {
+                recordingService.stopRecording()
+            }
+        case (.cooldown, .recordingLocked):
+            cooldownTimer?.invalidate()
+            cooldownTimer = nil
+        default:
+            break
+        }
+    }
+
+    /// Schedules automatic exit from cooldown state after the configured duration.
+    private func scheduleCooldownExit(context: CooldownContext) {
+        cooldownTimer?.invalidate()
+        logger.log(category: .detection, level: .debug, message: "[DetectionService] cooldown started: reason=\(context.reason.rawValue), duration=\(context.cooldownDuration)s")
+        cooldownTimer = Timer.scheduledTimer(withTimeInterval: context.cooldownDuration, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.exitCooldown()
+            }
+        }
+    }
+
+    /// Exits the cooldown state and transitions back to monitoringAll.
+    /// The suppressed apps set depends on the cooldown reason.
+    @MainActor
+    private func exitCooldown() {
+        guard case .cooldown(let ctx) = detectionState else { return }
+
+        switch ctx.reason {
+        case .autoStop, .appCrashed:
+            transition(to: .monitoringAll(suppressedApps: []))
+        case .manualStop:
+            var suppressed = ctx.suppressedApps
+            suppressed.formUnion(appMonitor.activeMeetingApps)
+            transition(to: .monitoringAll(suppressedApps: suppressed))
+        case .maxDuration:
+            if hasActiveMeetingSignals() {
+                showMaxDurationReminder(context: ctx)
+                // Wait for user response: accept → recordingLocked (handled by handleStartRecordingRequest)
+                // or decline/timeout → monitoringAll with suppressedApps
+                cooldownTimer?.invalidate()
+                cooldownTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard case .cooldown(var cooldownCtx) = self?.detectionState else {
+                            self?.transition(to: .monitoringAll(suppressedApps: []))
+                            return
+                        }
+                        if let bundleID = cooldownCtx.triggerAppBundleID {
+                            cooldownCtx.suppressedApps.insert(bundleID)
+                        }
+                        self?.transition(to: .monitoringAll(suppressedApps: cooldownCtx.suppressedApps))
+                    }
+                }
+                return  // Don't transition now — wait for user
+            } else {
+                transition(to: .monitoringAll(suppressedApps: []))
+            }
+        case .appDisabled:
+            transition(to: .monitoringAll(suppressedApps: []))
+        }
+
+        cooldownTimer?.invalidate()
+        cooldownTimer = nil
+    }
+
+    /// Checks whether any monitored app still has active meeting signals (window or mic).
+    @MainActor
+    private func hasActiveMeetingSignals() -> Bool {
+        if !appMonitor.activeMeetingApps.isEmpty { return true }
+        return findMonitoredAppUsingMic(logMonitor.activeMicUsers) != nil
+    }
+
+    /// Shows the max duration reminder overlay and logs the event.
+    @MainActor
+    private func showMaxDurationReminder(context: CooldownContext) {
+        let minutes = SettingsManager.shared.maxRecordingDurationMinutes
+        let appName = context.triggerAppName ?? "Unknown"
+        NotificationCenter.default.post(
+            name: .showRemindOverlay,
+            object: nil,
+            userInfo: [
+                "appName": appName,
+                "mode": "maxDuration",
+                "durationMinutes": minutes
+            ]
+        )
+        logger.log(category: .detection, level: .info, message: "[Decision] cooldownExit: showing maxDuration reminder for \(appName)")
+    }
+
+    /// Logs state machine transitions with detailed structured logging for debugging and traceability.
+    /// Each transition case includes contextual information: trigger app, mic users, recording duration,
+    /// cooldown reason, and suppressed apps — providing full observability into the detection state machine.
+    private func logStateTransition(from oldState: DetectionState, to newState: DetectionState) {
+        let df: DateFormatter = {
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+            f.locale = Locale(identifier: "en_US_POSIX")
+            return f
+        }()
+        let timestamp = df.string(from: Date())
+
+        switch (oldState, newState) {
+        case (_, .recordingLocked(let ctx)):
+            logger.log(category: .detection, level: .info, message: """
+                [DetectionStateMachine] → recordingLocked
+                ├─ triggerApp: "\(ctx.triggerAppName)"
+                ├─ triggerSource: \(ctx.triggerSource.rawValue)
+                ├─ activeMicUsers: \(logMonitor.activeMicUsers)
+                └─ timestamp: \(timestamp)
+                """)
+
+        case (.recordingLocked(let ctx), .cooldown(let cooldownCtx)):
+            let durStr = cooldownCtx.recordingDuration.map { "\(Int($0))s (\(Int($0)/60)m\(Int($0)%60)s)" } ?? "0s"
+            logger.log(category: .detection, level: .info, message: """
+                [DetectionStateMachine] → cooldown
+                ├─ reason: \(cooldownCtx.reason.rawValue)
+                ├─ triggerApp: "\(ctx.triggerAppName)"
+                ├─ recordingDuration: \(durStr)
+                ├─ suppressedApps: \(cooldownCtx.suppressedApps)
+                └─ timestamp: \(timestamp)
+                """)
+
+        case (.cooldown(let ctx), .monitoringAll(let suppressed)):
+            logger.log(category: .detection, level: .info, message: """
+                [DetectionStateMachine] → monitoringAll
+                ├─ suppressedApps: \(suppressed)
+                ├─ activeMicUsers: \(logMonitor.activeMicUsers)
+                └─ timestamp: \(timestamp)
+                """)
+
+        case (_, .monitoringAll):
+            logger.log(category: .detection, level: .info, message: """
+                [DetectionStateMachine] → monitoringAll
+                └─ timestamp: \(timestamp)
+                """)
+
+        default:
+            logger.log(category: .detection, level: .debug, message: "[DetectionStateMachine] \(oldState) → \(newState) at \(timestamp)")
         }
     }
     
     private func findMonitoredAppUsingMic(_ activeMicUsers: Set<String>) -> ApplicationMonitor.MonitoredApp? {
         for app in appMonitor.enabledApps {
             // Check canonical processName
+            logger.log(category: .detection, level: .debug, message: "[DetectionService] findMonitoredAppUsingMic: checking '\(app.processName)' → canonical: \(app.processName)")
             if activeMicUsers.contains(app.processName) { return app }
             // Check aliases (activeMicUsers stores matched names which may be aliases)
             if app.logProcessAliases.contains(where: { activeMicUsers.contains($0) }) {
@@ -222,24 +569,22 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     // Old handleStateChange removed. Logic moved to evaluateMeetingStatus.
     
     @MainActor
-    private func handleMeetingDetected(appName: String) {
-        // Cancel any pending stop (debounce)
-        stopDebounceTimer?.invalidate()
-        stopDebounceTimer = nil
+    private func handleMeetingDetected(appName: String, bundleID: String, source: TriggerSource) {
+        logger.log(category: .detection, level: .debug, message: "[DetectionService] handleMeetingDetected: appName=\(appName), bundleID=\(bundleID), source=\(source)")
 
-        // If already recording, do nothing
-        if recordingService.isRecording { return }
+        guard !recordingService.isRecording else { return }
+        guard settings.smartDetectionEnabled else { return }
 
-        // If user recently manually stopped, suppress auto-start to avoid afterglow false triggers
-        if manualStopSuppressed {
-            logger.log(category: .detection, level: .debug, message: "Auto-start suppressed (manual stop cooldown active) for \(appName)")
-            return
-        }
-
-        logger.log(category: .detection, message: "Meeting started: \(appName)")
-        
         switch settings.smartDetectionMode {
         case .auto:
+            let ctx = RecordingContext(
+                triggerAppBundleID: bundleID,
+                triggerAppName: appName,
+                triggerSource: source,
+                triggerTimestamp: Date()
+            )
+            transition(to: .recordingLocked(ctx))
+
             Task {
                 do {
                     try await recordingService.startRecording(trigger: .auto, appName: appName)
@@ -247,82 +592,50 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
                     logger.log(category: .detection, message: "Auto-recording started for \(appName)")
                 } catch {
                     logger.log(category: .detection, level: .error, message: "Auto-recording failed: \(error)")
+                    detectionState = .monitoringAll(suppressedApps: [])
                 }
             }
-            
+
         case .remind:
-            // Show in-app overlay instead of system notification
             NotificationCenter.default.post(name: .showRemindOverlay, object: nil, userInfo: ["appName": appName])
-            logger.log(category: .detection, message: "Sent reminder overlay for \(appName)")
+            logger.log(category: .detection, message: "Reminder overlay shown for \(appName)")
         }
     }
     
-    private func scheduleAutoStop() {
-        // If timer already running, let it run
-        if stopDebounceTimer != nil { return }
-
-        logger.log(category: .detection, message: "Meeting ended. Scheduling auto-stop in \(debounceInterval)s...")
-
-        stopDebounceTimer = Timer.scheduledTimer(withTimeInterval: debounceInterval, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.performAutoStop()
-            }
-        }
-    }
-    
-    /// Flag to distinguish auto-stop from manual stop in handleRecordingStopped
-    private var isAutoStopping: Bool = false
-
-    private func performAutoStop() {
-        stopDebounceTimer = nil
-
-        // Final check: is recording still active?
-        guard recordingService.isRecording else { return }
-
-        isAutoStopping = true
-        recordingService.stopRecording()
-        logger.log(category: .detection, message: "Auto-stopped recording.")
-    }
-
-    // MARK: - Manual Stop Suppression
-
-    /// Activate suppression to prevent auto-start after manual stop.
-    /// Suppression stays active until all mic signals disappear + cooldown expires.
-    private func activateManualStopSuppression() {
-        manualStopSuppressed = true
-        suppressionLiftTimer?.invalidate()
-        suppressionLiftTimer = nil
-        logger.log(category: .detection, level: .debug, message: "Manual stop suppression activated (will lift \(suppressionCooldown)s after all mic signals stop)")
-    }
-
-    /// Schedule suppression lift — called when activeMicUsers becomes empty while suppressed
-    private func scheduleSuppressionLift() {
-        suppressionLiftTimer?.invalidate()
-        logger.log(category: .detection, level: .debug, message: "All mic signals gone, scheduling suppression lift in \(suppressionCooldown)s")
-
-        suppressionLiftTimer = Timer.scheduledTimer(withTimeInterval: suppressionCooldown, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.liftManualStopSuppression()
-            }
-        }
-    }
-
-    /// Lift suppression after cooldown expires
-    private func liftManualStopSuppression() {
-        manualStopSuppressed = false
-        suppressionLiftTimer?.invalidate()
-        suppressionLiftTimer = nil
-        logger.log(category: .detection, level: .debug, message: "Manual stop suppression lifted")
-    }
     
     private func handleRecordingStopped(_ notification: Notification) {
+        logger.log(category: .detection, level: .debug, message: "[DetectionService] handleRecordingStopped")
+
         Task { @MainActor in
-            // Activate manual stop suppression if this was NOT an auto-stop
-            // (isAutoStopping is set true only in performAutoStop)
-            if !isAutoStopping {
-                activateManualStopSuppression()
+            if case .recordingLocked(let ctx) = detectionState {
+                let duration = Date().timeIntervalSince(ctx.triggerTimestamp)
+
+                let reason: CooldownReason
+                if let userInfo = notification.userInfo,
+                   let stopReason = userInfo["reason"] as? String,
+                   stopReason == "maxDuration" {
+                    reason = .maxDuration
+                } else if let userInfo = notification.userInfo,
+                          let isManual = userInfo["isManual"] as? Bool,
+                          isManual {
+                    reason = .manualStop
+                } else {
+                    reason = .autoStop
+                }
+
+                let cooldownCtx = CooldownContext(
+                    reason: reason,
+                    triggerAppBundleID: ctx.triggerAppBundleID,
+                    triggerAppName: ctx.triggerAppName,
+                    triggerType: ctx.triggerSource,
+                    recordingDuration: duration,
+                    suppressedApps: [],
+                    cooldownStartTime: Date(),
+                    cooldownDuration: cooldownDuration
+                )
+                transition(to: .cooldown(cooldownCtx))
+                scheduleCooldownExit(context: cooldownCtx)
             }
-            isAutoStopping = false
 
             if let url = notification.userInfo?["url"] as? URL {
                 notificationManager.sendRecordingSavedNotification(path: url)
@@ -333,12 +646,44 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     }
     
     private func handleStartRecordingRequest() {
+        logger.log(category: .detection, level: .debug, message: "[DetectionService] handleStartRecordingRequest")
+
+        let triggerSource: TriggerSource
+        let triggerAppBundleID: String
+        let triggerAppName: String
+
+        if case .cooldown(let ctx) = detectionState, ctx.reason == .maxDuration {
+            // Resuming after max duration reminder accepted
+            triggerAppBundleID = ctx.triggerAppBundleID ?? ""
+            triggerAppName = ctx.triggerAppName ?? "Unknown"
+            triggerSource = ctx.triggerType ?? .manual
+        } else {
+            // Remind overlay accepted, or manual start via notification
+            triggerAppBundleID = appMonitor.activeMeetingApps.first
+                ?? findMonitoredAppUsingMic(logMonitor.activeMicUsers)?.bundleIdentifier
+                ?? "unknown"
+            triggerAppName = appMonitor.activeMeetingApps.first
+                .flatMap { appMonitor.appStates[$0]?.config.processName }
+                ?? findMonitoredAppUsingMic(logMonitor.activeMicUsers)?.processName
+                ?? "Unknown"
+            triggerSource = .reminderAccepted
+        }
+
+        let ctx = RecordingContext(
+            triggerAppBundleID: triggerAppBundleID,
+            triggerAppName: triggerAppName,
+            triggerSource: triggerSource,
+            triggerTimestamp: Date()
+        )
+        transition(to: .recordingLocked(ctx))
+
         Task {
             do {
-                try await recordingService.startRecording(trigger: .manual, appName: nil) // Manual trigger from reminder
-                logger.log(category: .detection, message: "User accepted reminder, recording started.")
+                try await recordingService.startRecording(trigger: .manual, appName: nil)
+                logger.log(category: .detection, message: "Recording started from notification/reminder")
             } catch {
-                logger.log(category: .detection, level: .error, message: "Failed to start recording from notification: \(error)")
+                logger.log(category: .detection, level: .error, message: "Failed to start recording: \(error)")
+                detectionState = .monitoringAll(suppressedApps: [])
             }
         }
     }
@@ -351,12 +696,12 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
         // Cancel all Combine subscriptions to prevent memory leaks
         cancellables.removeAll()
 
-        // Invalidate timers
-        stopDebounceTimer?.invalidate()
-        stopDebounceTimer = nil
-        suppressionLiftTimer?.invalidate()
-        suppressionLiftTimer = nil
-        manualStopSuppressed = false
+        // Invalidate timers and reset state machine
+        cooldownTimer?.invalidate()
+        cooldownTimer = nil
+        recordingEvalTimer?.invalidate()
+        recordingEvalTimer = nil
+        detectionState = .monitoringAll(suppressedApps: [])
 
         logger.log(category: .detection, message: "DetectionService cleaned up")
     }
@@ -369,10 +714,8 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     /// Resources are cleaned up when cleanup() is called explicitly.
     deinit {
         // Timer cleanup is safe from deinit
-        stopDebounceTimer?.invalidate()
-        stopDebounceTimer = nil
-        suppressionLiftTimer?.invalidate()
-        suppressionLiftTimer = nil
+        cooldownTimer?.invalidate()
+        cooldownTimer = nil
     }
 }
 
@@ -395,7 +738,11 @@ class LogMonitorService: ObservableObject {
     private let queue = DispatchQueue(label: "com.meetingsonar.logmonitor")
     private var isMonitoring = false
     private var restartTimer: Timer?
-    
+
+    /// Process names to exclude from mic detection (self-exclusion)
+    private var excludedProcessNames: Set<String> = []
+    private var hasConfiguredSelfExclusion = false
+
     private init() {}
 
     deinit {
@@ -405,27 +752,50 @@ class LogMonitorService: ObservableObject {
     /// Configure monitored apps with alias-to-canonical mapping.
     /// Must be called before startMonitoring().
     func configureMonitoredApps(_ apps: [ApplicationMonitor.MonitoredApp]) {
+        reconfigure(apps: apps)
+    }
+
+    /// Reconfigure monitored apps dynamically (safe to call multiple times).
+    /// Updates alias mapping and prunes activeMicUsers to only include matching names.
+    func reconfigure(apps: [ApplicationMonitor.MonitoredApp]) {
         var mapping: [String: String] = [:]
         var allNames = Set<String>()
         for app in apps {
-            // processName maps to itself
             mapping[app.processName] = app.processName
             allNames.insert(app.processName)
-            // Each alias maps to canonical processName
             for alias in app.logProcessAliases {
                 mapping[alias] = app.processName
                 allNames.insert(alias)
             }
         }
         aliasToCanonical = mapping
-        // Sort by length descending: "Microsoft Teams WebView Helper" before "Microsoft Teams"
         sortedProcessNames = allNames.sorted { $0.count > $1.count }
-        LoggerService.shared.log(category: .detection, level: .debug,
-            message: "[LogMonitor] Configured \(sortedProcessNames.count) process names with \(mapping.count) alias mappings")
+
+        DispatchQueue.main.async {
+            let validCanonicalNames = Set(apps.map(\.processName))
+            self.activeMicUsers = self.activeMicUsers.filter { name in
+                let canonical = self.aliasToCanonical[name] ?? name
+                return validCanonicalNames.contains(canonical)
+            }
+        }
+
+        LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] Reconfigured: \(sortedProcessNames.count) names, \(mapping.count) aliases")
+    }
+
+    /// Build exclusion set so MeetingSonar's own CoreAudio events
+    /// are never mistaken for a meeting app using the microphone.
+    private func setupSelfExclusion() {
+        guard !hasConfiguredSelfExclusion else { return }
+        hasConfiguredSelfExclusion = true
+        let myProcessName = ProcessInfo.processInfo.processName
+        let myBundleID = Bundle.main.bundleIdentifier ?? ""
+        excludedProcessNames = [myProcessName, myBundleID, "MeetingSonar"]
+        LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] Self-exclusion: \(excludedProcessNames)")
     }
 
     func startMonitoring() {
         guard !isMonitoring else { return }
+        setupSelfExclusion()
         isMonitoring = true
         
         queue.async { [weak self] in
@@ -434,6 +804,7 @@ class LogMonitorService: ObservableObject {
     }
     
     func stopMonitoring() {
+        LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] log stream stopping (pid: \(process?.processIdentifier ?? 0))")
         isMonitoring = false
         process?.terminate()
         process = nil
@@ -472,6 +843,7 @@ class LogMonitorService: ObservableObject {
         
         do {
             try process.run()
+            LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] log stream started (pid: \(process.processIdentifier))")
             LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] Started monitoring CoreAudio logs for mic usage")
         } catch {
             LoggerService.shared.log(category: .detection, level: .error, message: "[LogMonitor] Failed to start log stream: \(error)")
@@ -479,6 +851,7 @@ class LogMonitorService: ObservableObject {
     }
     
     private func scheduleRestart() {
+        LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] scheduling restart in 5.0s")
         restartTimer?.invalidate()
         restartTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
             self?.queue.async {
@@ -490,8 +863,14 @@ class LogMonitorService: ObservableObject {
     private func processLogOutput(_ output: String) {
         let lines = output.components(separatedBy: .newlines)
         for line in lines {
+            LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] raw log line: \(line)")
             // Filter for setPlayState first to reduce noise
             guard line.contains("setPlayState") else { continue }
+
+            // Self-exclusion: skip log lines matching our own process
+            guard !excludedProcessNames.contains(where: { line.contains($0) }) else {
+                continue
+            }
 
             // Longest-match-first: sortedProcessNames is pre-sorted by length descending.
             // "Microsoft Teams WebView Helper" will match before "Microsoft Teams".
@@ -543,11 +922,13 @@ class LogMonitorService: ObservableObject {
                     if !self.activeMicUsers.contains(name) {
                         LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] Mic ACTIVE for: \(name)")
                         self.activeMicUsers.insert(name)
+                        LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] activeMicUsers changed: \(self.activeMicUsers)")
                     }
                 } else {
                     if self.activeMicUsers.contains(name) {
                         LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] Mic INACTIVE for: \(name)")
                         self.activeMicUsers.remove(name)
+                        LoggerService.shared.log(category: .detection, level: .debug, message: "[LogMonitor] activeMicUsers changed: \(self.activeMicUsers)")
                     }
                 }
             }

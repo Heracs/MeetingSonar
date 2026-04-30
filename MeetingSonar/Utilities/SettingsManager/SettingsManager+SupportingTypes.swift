@@ -19,29 +19,22 @@ enum AudioFormat: String, CaseIterable {
     }
 }
 
-/// Audio encoding quality levels
+/// Audio encoding quality levels — simplified to 2 tiers
 enum AudioQuality: String, CaseIterable {
-    case low = "low"
-    case medium = "medium"
-    case high = "high"
-
-    var displayName: String {
-        return localizedDisplayName // Alias for existing codebase compatibility
-    }
+    case low = "low"       // 64 kbps
+    case high = "high"     // 128 kbps
 
     var localizedDisplayName: String {
         switch self {
         case .low: return "Low (64 kbps)"
-        case .medium: return "Medium (128 kbps)"
-        case .high: return "High (256 kbps)"
+        case .high: return "High (128 kbps)"
         }
     }
 
     var bitRate: Int {
         switch self {
         case .low: return 64_000
-        case .medium: return 128_000
-        case .high: return 256_000
+        case .high: return 128_000
         }
     }
 

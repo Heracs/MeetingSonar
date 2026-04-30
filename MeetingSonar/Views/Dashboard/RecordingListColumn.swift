@@ -40,11 +40,39 @@ struct RecordingListColumn: View {
     @State private var recordingToDelete: MeetingMeta?
     @State private var renameText = ""
 
+    // MARK: - Multi-Select State (F-0.10.17)
+    @State private var isSelectionMode: Bool = false
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var isMerging: Bool = false
+    @State private var mergeError: String?
+    @State private var showMergeConfirm: Bool = false
+
     // MARK: - Version Info
     private var appVersionString: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
         return "\(version) (\(build))"
+    }
+
+    /// 多选模式下选中的录音（按 startTime 排序）
+    private var selectedRecordingsForMerge: [MeetingMeta] {
+        metadataManager.recordings
+            .filter { selectedIDs.contains($0.id) }
+            .sorted { $0.startTime < $1.startTime }
+    }
+
+    /// 选中录音的总时长文本
+    private var selectedDurationText: String {
+        let total = selectedRecordingsForMerge.reduce(0) { $0 + $1.duration }
+        let totalSeconds = Int(total)
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let secs = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        } else {
+            return String(format: "%d:%02d", minutes, secs)
+        }
     }
 
     var filteredRecordings: [MeetingMeta] {
@@ -116,38 +144,63 @@ struct RecordingListColumn: View {
 
             Divider()
 
+            // MARK: - Selection Toolbar (F-0.10.17)
+            if isSelectionMode {
+                HStack(spacing: 8) {
+                    Button {
+                        showMergeConfirm = true
+                    } label: {
+                        Label(
+                            "合并 (\(selectedIDs.count))",
+                            systemImage: "arrow.triangle.merge"
+                        )
+                        .font(.system(size: 12))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(selectedIDs.count < 2 || isMerging)
+
+                    Spacer()
+
+                    Button {
+                        exitSelectionMode()
+                    } label: {
+                        Text(String(localized: "merge.action.cancel", defaultValue: "取消"))
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isMerging)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.accentColor.opacity(0.05))
+            } else {
+                HStack {
+                    Spacer()
+                    Button {
+                        isSelectionMode = true
+                        selectedIDs = []
+                    } label: {
+                        Label(
+                            String(localized: "merge.action.select", defaultValue: "选择"),
+                            systemImage: "checkmark.circle"
+                        )
+                        .font(.system(size: 12))
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+
             // MARK: - Recording List
-            List(selection: $selectedRecordingID) {
+            List(selection: isSelectionMode ? nil : $selectedRecordingID) {
                 Section {
                     ForEach(filteredRecordings) { recording in
-                        RecordingRowView(
-                            meta: recording,
-                            isSelected: selectedRecordingID == recording.id
-                        )
-                        .tag(recording.id)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                        .listRowSeparator(.visible)
-                        .contextMenu {
-                            RecordingContextMenu(
-                                recording: recording,
-                                onRename: { recordingToRename = recording },
-                                onDelete: { recordingToDelete = recording }
-                            )
-                        }
+                        recordingRow(for: recording)
                     }
                 } header: {
-                    HStack {
-                        Text("录音列表")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("\(filteredRecordings.count) 个")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                    listSectionHeader
                 }
             }
             .listStyle(.plain)
@@ -181,6 +234,23 @@ struct RecordingListColumn: View {
             .padding(.vertical, 8)
             .background(Color(nsColor: .windowBackgroundColor))
         }
+        // MARK: - Merge Progress Overlay (F-0.10.17)
+        .overlay {
+            if isMerging {
+                ZStack {
+                    Color.black.opacity(0.3)
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.regular)
+                        Text(String(localized: "merge.status.merging", defaultValue: "正在合并..."))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(24)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
         .frame(minWidth: 280, idealWidth: 320)
         .onAppear {
             // Auto-select the most recent recording if none selected
@@ -194,6 +264,33 @@ struct RecordingListColumn: View {
                !metadataManager.recordings.contains(where: { $0.id == selectedID }),
                let first = filteredRecordings.first {
                 selectedRecordingID = first.id
+            }
+        }
+        // MARK: - Merge Confirmation Alert (F-0.10.17)
+        .alert(
+            String(localized: "merge.confirm.title", defaultValue: "确认合并"),
+            isPresented: $showMergeConfirm
+        ) {
+            Button(String(localized: "merge.action.cancel", defaultValue: "取消"), role: .cancel) {}
+            Button(String(localized: "merge.action.merge.confirm", defaultValue: "合并")) {
+                performMerge()
+            }
+        } message: {
+            let count = selectedRecordingsForMerge.count
+            Text("将合并 \(count) 条录音（总时长约 \(selectedDurationText)）。\n原始录音将保留不变。")
+        }
+        // MARK: - Merge Error Alert (F-0.10.17)
+        .alert(
+            String(localized: "merge.error.title", defaultValue: "合并失败"),
+            isPresented: .init(
+                get: { mergeError != nil },
+                set: { if !$0 { mergeError = nil } }
+            )
+        ) {
+            Button("OK") { mergeError = nil }
+        } message: {
+            if let error = mergeError {
+                Text(error)
             }
         }
         // MARK: - Delete Confirmation Alert
@@ -255,6 +352,115 @@ struct RecordingListColumn: View {
                 )
             }
         }
+    }
+
+    // MARK: - Multi-Select Actions (F-0.10.17)
+
+    private func toggleSelection(_ id: UUID) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
+
+    private func exitSelectionMode() {
+        isSelectionMode = false
+        selectedIDs = []
+    }
+
+    private func performMerge() {
+        let recordings = selectedRecordingsForMerge
+        guard recordings.count >= 2 else { return }
+
+        isMerging = true
+        mergeError = nil
+
+        Task {
+            do {
+                let result = try await AudioMergeService.merge(recordings: recordings)
+                await MetadataManager.shared.add(result.metadata)
+
+                exitSelectionMode()
+                isMerging = false
+
+                // 自动选中新录音
+                selectedRecordingID = result.metadata.id
+            } catch {
+                isMerging = false
+                mergeError = error.localizedDescription
+
+                LoggerService.shared.log(
+                    category: .audio,
+                    level: .error,
+                    message: "[RecordingListColumn] 合并失败：\(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    // MARK: - Extracted Views (F-0.10.17: reduce type-checker complexity)
+
+    @ViewBuilder
+    private func recordingRow(for recording: MeetingMeta) -> some View {
+        if isSelectionMode {
+            RecordingRowView(
+                meta: recording,
+                isSelected: false,
+                isSelectionMode: true,
+                isChecked: selectedIDs.contains(recording.id)
+            )
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowSeparator(.visible)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                toggleSelection(recording.id)
+            }
+        } else {
+            RecordingRowView(
+                meta: recording,
+                isSelected: selectedRecordingID == recording.id
+            )
+            .tag(recording.id)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowSeparator(.visible)
+            .contextMenu {
+                RecordingContextMenu(
+                    recording: recording,
+                    onRename: { recordingToRename = recording },
+                    onDelete: { recordingToDelete = recording }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var listSectionHeader: some View {
+        HStack {
+            if isSelectionMode {
+                Text("已选择 \(selectedIDs.count) 条")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.accentColor)
+                Spacer()
+                if selectedIDs.count >= 2 {
+                    Text("总时长: \(selectedDurationText)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                Text("录音列表")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(filteredRecordings.count) 个")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     // MARK: - Actions

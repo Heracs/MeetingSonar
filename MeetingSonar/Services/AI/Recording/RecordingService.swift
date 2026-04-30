@@ -123,6 +123,32 @@ final class RecordingService: RecordingServiceProtocol {
         setupObservers()
     }
 
+    /// Fix recordings left in .recording status from a previous crash.
+    /// Transitions them to .pending and updates duration from the actual file.
+    /// Must be called AFTER MetadataManager has loaded its data.
+    func cleanupStaleRecordingStatus() {
+        Task { @MainActor in
+            let staleRecordings = MetadataManager.shared.recordings.filter { $0.status == .recording }
+            guard !staleRecordings.isEmpty else { return }
+
+            logger.log(category: .recording, level: .warning, message: "[RecordingService] Found \(staleRecordings.count) stale recording(s) from previous session")
+
+            for meta in staleRecordings {
+                let fileURL = PathManager.shared.recordingsURL.appendingPathComponent(meta.filename)
+                let duration: TimeInterval
+                if FileManager.default.fileExists(atPath: fileURL.path) {
+                    let asset = AVURLAsset(url: fileURL)
+                    let cmDuration = try? await asset.load(.duration)
+                    duration = cmDuration.map { CMTimeGetSeconds($0) } ?? 0
+                } else {
+                    duration = 0
+                }
+                await MetadataManager.shared.updateRecordingEnd(filename: meta.filename, duration: duration, status: .pending)
+                logger.log(category: .recording, level: .warning, message: "[RecordingService] Recovered: \(meta.filename) (duration: \(Int(duration))s)")
+            }
+        }
+    }
+
     /// Test initialization with dependency injection
     ///
     /// - Parameters:
@@ -238,6 +264,7 @@ final class RecordingService: RecordingServiceProtocol {
     ///   - trigger: How this recording was started (manual only for v0.1)
     ///   - appName: Optional application name for filename
     func startRecording(trigger: RecordingTrigger = .manual, appName: String? = nil) async throws {
+        let t0 = CFAbsoluteTimeGetCurrent()
         guard recordingState == .idle else {
             logger.log(category: .recording, level: .warning, message: "Already recording or paused")
             return
@@ -246,21 +273,17 @@ final class RecordingService: RecordingServiceProtocol {
         // Store trigger type
         recordingTrigger = trigger
 
-        // MARK: - Get scenario-based configuration (v1.0 - Recording Scenario Optimization)
-        //
-        // This is the key change: use scenario-specific default configs based on trigger type
-        // - .auto and .smartReminder use autoRecordingDefaultConfig (meeting scenario)
-        // - .manual uses manualRecordingDefaultConfig (video/music capture scenario)
         let config = await MainActor.run {
             let cfg = settings.defaultConfig(for: trigger)
-            // Update settings' current active config for backward compatibility
             settings.setCurrentActiveConfig(cfg)
             return cfg
         }
         currentRecordingConfig = config
+        logger.log(category: .recording, level: .info, message: "[Timing] config loaded: \(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - t0))s")
 
         // Check permissions
         let (screenOK, micOK) = await permissionManager.checkAllPermissions()
+        logger.log(category: .recording, level: .info, message: "[Timing] permissions checked: \(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - t0))s")
 
         // Log permission metric
         logger.logMetric(event: "permission_check_before_record", attributes: [
@@ -289,23 +312,21 @@ final class RecordingService: RecordingServiceProtocol {
 
         // Setup asset writer
         try await setupAssetWriter(url: outputURL)
+        logger.log(category: .recording, level: .info, message: "[Timing] assetWriter ready: \(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - t0))s")
 
         // Setup delegates
         audioCaptureService.delegate = self
         microphoneService.delegate = self
         audioMixerService.delegate = self
 
-        // MARK: - Start services based on configuration
-        //
-        // Only start services that are enabled in the config to avoid unnecessary resource usage
+        // Start mixer and capture services
         audioMixerService.start()
-
-        // Configure mixer with initial audio source states
         audioMixerService.setSystemAudioEnabled(config.includeSystemAudio)
         audioMixerService.setMicrophoneEnabled(config.includeMicrophone)
 
         if config.includeSystemAudio {
             try await audioCaptureService.startCapture()
+            logger.log(category: .recording, level: .info, message: "[Timing] capture started: \(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - t0))s")
         }
 
         if config.includeMicrophone {
@@ -390,8 +411,15 @@ final class RecordingService: RecordingServiceProtocol {
     
     /// Stop recording and save the file
     func stopRecording() {
+        stopRecording(withReason: nil)
+    }
+
+    /// Stop recording and save the file with an optional reason
+    /// - Parameter reason: Reason for stopping (e.g., "maxDuration" for auto-stop). nil means manual stop.
+    private func stopRecording(withReason reason: String?) {
         guard recordingState != .idle else { return }
-        
+
+        let capturedReason = reason
         let finalDuration = adjustedDuration
         let wasState = recordingState
         recordingState = .idle
@@ -447,11 +475,20 @@ final class RecordingService: RecordingServiceProtocol {
 
                 // FIX: Post notification so AppDelegate knows to trigger AI
                 // v0.5.1 FIX: Restore missing notification
+                let closureReason = capturedReason
+                let closureURL = url
                 DispatchQueue.main.async {
+                    var userInfo: [String: Any] = ["url": closureURL]
+                    if let reason = closureReason {
+                        userInfo["reason"] = reason
+                    } else {
+                        userInfo["isManual"] = true
+                    }
+
                     NotificationCenter.default.post(
                         name: .recordingDidStop,
                         object: self,
-                        userInfo: ["url": url]
+                        userInfo: userInfo
                     )
                 }
 
@@ -470,8 +507,10 @@ final class RecordingService: RecordingServiceProtocol {
     
     // MARK: - Constants
     
-    /// Maximum recording duration (2 hours) - F-1.1
-    private let maxDuration: TimeInterval = 7200
+    /// Maximum recording duration from user settings
+    private var maxDuration: TimeInterval {
+        SettingsManager.shared.maxRecordingDurationSeconds
+    }
     
     // ...
 
@@ -505,13 +544,13 @@ final class RecordingService: RecordingServiceProtocol {
         )
         
         // Stop recording
-        stopRecording()
+        stopRecording(withReason: "maxDuration")
         
         // Notify user
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
         content.title = "录音已停止"
-        content.body = "录音时长已达到上限（2小时）并自动保存。"
+        content.body = "录音时长已达到上限（3小时）并自动保存。"
         content.sound = .default
         
         let request = UNNotificationRequest(identifier: "MaxDurationReached", content: content, trigger: nil)
@@ -533,8 +572,11 @@ final class RecordingService: RecordingServiceProtocol {
             try FileManager.default.removeItem(at: url)
         }
         
-        // Create asset writer - always use M4A for reliability
+        // Create asset writer - always use M4A for reliability.
+        // movieFragmentInterval writes periodic moof+mdat fragments so partial
+        // files from crashes have playable segments.
         assetWriter = try AVAssetWriter(outputURL: url, fileType: .m4a)
+        assetWriter?.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
         
         let quality = await MainActor.run { settings.audioQuality }
         

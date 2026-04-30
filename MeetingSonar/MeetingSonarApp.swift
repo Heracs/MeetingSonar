@@ -112,7 +112,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Run in background to avoid blocking launch
             await MetadataManager.shared.load()
             await MetadataManager.shared.scanAndMigrate()
-            
+
+            // Clean up any recordings left in .recording state from a crash
+            RecordingService.shared.cleanupStaleRecordingStatus()
+
             // Refresh local model availability cache
             SettingsManager.shared.refreshReadyLocalModels()
         }

@@ -59,6 +59,7 @@
 		905F677B2F3D926C00820924 /* DetectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 905F67792F3D926C00820924 /* DetectionService.swift */; };
 		905F67812F3DA10E00820924 /* AudioSplitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 905F677F2F3DA10E00820924 /* AudioSplitter.swift */; };
 		905F67822F3DA10E00820924 /* AudioEnergyAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 905F677E2F3DA10E00820924 /* AudioEnergyAnalyzer.swift */; };
+		5E0F5366EE124784AF9B0B54 /* AudioMergeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17030239794248A6BC6ABA14 /* AudioMergeService.swift */; };
 		905F67832F3DA1EC00820924 /* ApplicationMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DC9F826E55441D72A005003 /* ApplicationMonitor.swift */; };
 		905F67892F3DA34A00820924 /* CloudModelConfigSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 905F67862F3DA34A00820924 /* CloudModelConfigSheet.swift */; };
 		905F678A2F3DA34A00820924 /* AdvancedParametersSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 905F67842F3DA34A00820924 /* AdvancedParametersSheet.swift */; };
@@ -188,6 +189,7 @@
 		905F67792F3D926C00820924 /* DetectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetectionService.swift; sourceTree = "<group>"; };
 		905F677E2F3DA10E00820924 /* AudioEnergyAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEnergyAnalyzer.swift; sourceTree = "<group>"; };
 		905F677F2F3DA10E00820924 /* AudioSplitter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSplitter.swift; sourceTree = "<group>"; };
+		17030239794248A6BC6ABA14 /* AudioMergeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMergeService.swift; sourceTree = "<group>"; };
 		905F67842F3DA34A00820924 /* AdvancedParametersSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedParametersSheet.swift; sourceTree = "<group>"; };
 		905F67852F3DA34A00820924 /* CloudAISettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudAISettingsView.swift; sourceTree = "<group>"; };
 		905F67862F3DA34A00820924 /* CloudModelConfigSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudModelConfigSheet.swift; sourceTree = "<group>"; };
@@ -371,6 +373,7 @@
 			isa = PBXGroup;
 			children = (
 				905F677E2F3DA10E00820924 /* AudioEnergyAnalyzer.swift */,
+				17030239794248A6BC6ABA14 /* AudioMergeService.swift */,
 				905F677F2F3DA10E00820924 /* AudioSplitter.swift */,
 			);
 			path = AudioProcessing;
@@ -775,6 +778,7 @@
 				A1000008 /* SettingsManager.swift in Sources */,
 				905F67812F3DA10E00820924 /* AudioSplitter.swift in Sources */,
 				905F67822F3DA10E00820924 /* AudioEnergyAnalyzer.swift in Sources */,
+				5E0F5366EE124784AF9B0B54 /* AudioMergeService.swift in Sources */,
 				A1000013 /* NotificationPanel.swift in Sources */,
 				A1000014 /* SmartDetectionSettingsView.swift in Sources */,
 				90DC69FF2F11F59100FCC5B5 /* LocalizationManager.swift in Sources */,

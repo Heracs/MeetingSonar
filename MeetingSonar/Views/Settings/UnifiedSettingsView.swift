@@ -144,6 +144,19 @@ struct UnifiedSettingsView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 16)
+
+                Divider()
+
+                Toggle(isOn: $settings.enableDebugLogging) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.general.debugLogging")
+                            .font(.body)
+                        Text("settings.general.debugLogging.hint")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityIdentifier("Toggle_DebugLogging")
             }
         }
     }
@@ -167,6 +180,25 @@ struct UnifiedSettingsView: View {
                     .frame(minWidth: 180)
                 }
                 .accessibilityIdentifier("Picker_AudioQuality")
+
+                Divider()
+
+                // Max Recording Duration
+                labeledRow(label: "settings.recording.maxDuration") {
+                    HStack(spacing: 8) {
+                        Stepper(
+                            value: $settings.maxRecordingDurationMinutes,
+                            in: 5...180,
+                            step: 5
+                        ) {
+                            EmptyView()
+                        }
+                        .labelsHidden()
+                        Text("\(settings.maxRecordingDurationMinutes) min")
+                            .monospacedDigit()
+                            .frame(minWidth: 60, alignment: .trailing)
+                    }
+                }
 
                 Divider()
 

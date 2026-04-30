@@ -150,6 +150,7 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         static let includeMicrophone = "includeMicrophone"
         static let smartDetectionEnabled = "smartDetectionEnabled"
         static let smartDetectionMode = "smartDetectionMode"
+        static let enableDebugLogging = "enableDebugLogging"
         static let asrEngineType = "asrEngineType"  // F-5.14: ASR engine selection
         static let qwen3UseMLXBackend = "qwen3UseMLXBackend"  // F-5.14 Phase 3: MLX backend preference
         static let selectedASRPromptId = "selectedASRPromptId"  // F-10.0-PromptMgmt: Selected ASR prompt
@@ -206,7 +207,8 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
             Keys.includeMicrophone: true,
             // v1.1.0: Cloud AI Settings
             Keys.enableStreamingSummary: true,
-            Keys.defaultLLMQualityPreset: LLMQualityPreset.balanced.rawValue
+            Keys.defaultLLMQualityPreset: LLMQualityPreset.balanced.rawValue,
+            Keys.enableDebugLogging: false
         ])
 
         // Register scenario default configs (Recording Scenario Optimization v1.0)
@@ -435,6 +437,20 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
 
     // MARK: - Per-App Detection Settings
 
+    /// Check if detection is enabled for a specific app by bundle ID
+    func isAppDetectionEnabled(bundleID: String) -> Bool {
+        switch bundleID {
+        case "us.zoom.xos": return detectZoom
+        case "com.microsoft.teams": return detectTeamsClassic
+        case "com.microsoft.teams2": return detectTeamsNew
+        case "com.cisco.webex.webex": return detectWebex
+        case "com.tencent.meeting": return detectTencentMeeting
+        case "com.electron.lark.iron": return detectFeishu
+        case "com.tencent.xinWeChat": return detectWeChat
+        default: return false
+        }
+    }
+
     // MARK: Western Apps
 
     /// Enable Zoom detection
@@ -472,6 +488,17 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
 
     /// Enable WeChat voice call detection (default: false for privacy)
     @AppStorage("detectWeChat") var detectWeChat: Bool = false
+
+    // MARK: - Max Recording Duration (F-0.11.x)
+
+    /// Maximum single recording duration in minutes (5–180, default 180)
+    @AppStorage("maxRecordingDurationMinutes") var maxRecordingDurationMinutes: Int = 180
+
+    /// Clamped max recording duration in seconds
+    var maxRecordingDurationSeconds: TimeInterval {
+        let clamped = min(max(maxRecordingDurationMinutes, 5), 180)
+        return TimeInterval(clamped) * 60
+    }
 
     // MARK: - Auto Processing Settings (F-0.10.4)
 
@@ -561,6 +588,15 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
     /// Enable streaming summary output
     /// v1.1.0: Global toggle for streaming LLM output
     @AppStorage("enableStreamingSummary") var enableStreamingSummary: Bool = true
+
+    /// Enable detailed debug logging (runtime toggle, no restart needed)
+    @Published var enableDebugLogging: Bool = false {
+        didSet {
+            defaults.set(enableDebugLogging, forKey: Keys.enableDebugLogging)
+            LoggerService.shared.minimumLevel = enableDebugLogging ? .debug : .info
+            LoggerService.shared.log(category: .general, level: .info, message: "Debug logging \(enableDebugLogging ? "enabled" : "disabled")")
+        }
+    }
 
     /// Default LLM quality preset for new configurations
     /// v1.1.0: Default quality preset (fast/balanced/quality)
@@ -673,6 +709,9 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         }
 
         loadLaunchAtLoginState()
+
+        // Load debug logging preference (F-0.11.2)
+        enableDebugLogging = defaults.bool(forKey: Keys.enableDebugLogging)
 
         // Load hotwords from data directory file (F-0.10.14)
         loadHotwordsFromFile()
@@ -856,34 +895,31 @@ enum AudioFormat: String, CaseIterable {
     }
 }
 
-/// Audio encoding quality levels
+/// Audio encoding quality levels (F-0.11.3: simplified to 2 tiers)
 enum AudioQuality: String, CaseIterable {
-    case low = "low"
-    case medium = "medium"
-    case high = "high"
-    
+    case low = "low"       // 64 kbps
+    case high = "high"     // 128 kbps
+
     var displayName: String {
-        return localizedDisplayName // Alias for existing codebase compatibility
+        return localizedDisplayName
     }
-    
+
     var localizedDisplayName: String {
         switch self {
         case .low: return "Low (64 kbps)"
-        case .medium: return "Medium (128 kbps)"
-        case .high: return "High (256 kbps)"
+        case .high: return "High (128 kbps)"
         }
     }
-    
+
     var bitRate: Int {
         switch self {
         case .low: return 64_000
-        case .medium: return 128_000
-        case .high: return 256_000
+        case .high: return 128_000
         }
     }
-    
+
     var sampleRate: Double {
-        return 48000.0  // Standard for digital audio/video
+        return 48000.0
     }
 }
 

@@ -3,6 +3,12 @@ import AppKit
 import Combine
 
 /// 负责通过"进程存在"和"窗口特征"双重验证来监测会议应用的状态
+
+// MARK: - Detection Settings Notification Name
+// Defined here in addition to SettingsManager.swift for cross-file visibility during batch compilation.
+extension Notification.Name {
+    static let detectionSettingsDidChange = Notification.Name("DetectionSettingsDidChange")
+}
 @MainActor
 class ApplicationMonitor: ObservableObject {
     
@@ -10,7 +16,7 @@ class ApplicationMonitor: ObservableObject {
     
     // MARK: - Types
     
-    enum MeetingState {
+    enum MeetingState: Equatable {
         case notRunning
         case running(pid: pid_t) // 进程运行，但未检测到会议窗口
         case inMeeting(pid: pid_t) // 进程运行 + 检测到会议窗口
@@ -21,12 +27,23 @@ class ApplicationMonitor: ObservableObject {
         let processName: String
         let logProcessAliases: [String] // Additional names to look for in logs (e.g. "aomhost")
         let meetingWindowPatterns: [String] // 特征窗口标题关键字（包含匹配）
+        let excludeWindowPatterns: [String] // 排除窗口模式（优先级高于 meetingWindowPatterns）。具体值需实测确定。
     }
     
     // MARK: - Properties
     
-    @Published private(set) var currentMeetingApp: MonitoredApp?
-    @Published private(set) var meetingState: MeetingState = .notRunning // Renamed from appState to meetingState to match usage
+    /// Per-app monitoring state keyed by bundleIdentifier
+    struct PerAppState {
+        let config: MonitoredApp
+        var meetingState: MeetingState = .notRunning
+        var windowPollCount: Int = 0
+    }
+
+    /// Per-app states keyed by bundleIdentifier
+    @Published private(set) var appStates: [String: PerAppState] = [:]
+
+    /// BundleIDs of apps currently in .inMeeting state (for DetectionService)
+    @Published private(set) var activeMeetingApps: Set<String> = []
     
     let monitoredApps: [MonitoredApp] = [
         // MARK: - Existing Apps
@@ -34,25 +51,29 @@ class ApplicationMonitor: ObservableObject {
             bundleIdentifier: "us.zoom.xos",
             processName: "zoom.us",
             logProcessAliases: ["zoom.us", "Zoom", "aomhost"],
-            meetingWindowPatterns: ["Zoom Meeting", "Zoom Webinar"]
+            meetingWindowPatterns: ["Zoom Meeting", "Zoom Webinar", "Zoom会议"],
+            excludeWindowPatterns: []
         ),
         MonitoredApp(
             bundleIdentifier: "com.microsoft.teams",
             processName: "Microsoft Teams",
             logProcessAliases: ["Microsoft Teams"],
-            meetingWindowPatterns: ["| Microsoft Teams", "Meeting"]
+            meetingWindowPatterns: ["| Microsoft Teams", "Meeting"],
+            excludeWindowPatterns: []
         ),
         MonitoredApp(
             bundleIdentifier: "com.microsoft.teams2", // New Teams (Work/School)
             processName: "MSTeams",
             logProcessAliases: ["MSTeams", "Microsoft Teams WebView Helper"],
-            meetingWindowPatterns: [] // Reliant on Mic Detection (LogMonitor) due to "No Title" issue
+            meetingWindowPatterns: [], // Reliant on Mic Detection (LogMonitor) due to "No Title" issue
+            excludeWindowPatterns: []
         ),
         MonitoredApp(
             bundleIdentifier: "com.cisco.webex.webex",
             processName: "Webex",
             logProcessAliases: ["Webex"],
-            meetingWindowPatterns: ["Webex Meeting"]
+            meetingWindowPatterns: ["Webex Meeting"],
+            excludeWindowPatterns: []
         ),
 
         // MARK: - New Apps (Phase 1: Tencent Meeting)
@@ -60,7 +81,8 @@ class ApplicationMonitor: ObservableObject {
             bundleIdentifier: "com.tencent.meeting",
             processName: "TencentMeeting",
             logProcessAliases: ["TencentMeeting", "wemeet", "com.tencent.meeting"],
-            meetingWindowPatterns: ["腾讯会议", "Tencent Meeting"]
+            meetingWindowPatterns: ["腾讯会议", "Tencent Meeting"],
+            excludeWindowPatterns: []
         ),
 
         // MARK: - New Apps (Phase 2: Feishu/Lark Meeting)
@@ -68,7 +90,8 @@ class ApplicationMonitor: ObservableObject {
             bundleIdentifier: "com.electron.lark.iron",
             processName: "Feishu",
             logProcessAliases: ["Feishu", "Lark", "Lark Helper", "com.electron.lark.iron"],
-            meetingWindowPatterns: ["视频会议", "语音通话", "会议中", "Video Meeting", "Voice Call", "Meeting"]
+            meetingWindowPatterns: ["视频会议", "语音通话", "会议中", "Video Meeting", "Voice Call", "Meeting"],
+            excludeWindowPatterns: []
         ),
 
         // MARK: - New Apps (Phase 3: WeChat Voice Call)
@@ -76,7 +99,8 @@ class ApplicationMonitor: ObservableObject {
             bundleIdentifier: "com.tencent.xinWeChat",
             processName: "WeChat",
             logProcessAliases: ["WeChat", "微信"],
-            meetingWindowPatterns: []  // Relies on mic detection and process count
+            meetingWindowPatterns: [],  // Relies on mic detection and process count
+            excludeWindowPatterns: []
         )
     ]
 
@@ -111,10 +135,17 @@ class ApplicationMonitor: ObservableObject {
     private var workspaceObservation: AnyCancellable?
     private var windowCheckTimer: Timer?
     private let logger = LoggerService.shared
+    private var cancellables = Set<AnyCancellable>()
     
     // MARK: - Initialization
     
     init() {
+        NotificationCenter.default.publisher(for: .detectionSettingsDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.reloadEnabledApps()
+            }
+            .store(in: &cancellables)
         startMonitoring()
     }
 
@@ -137,7 +168,11 @@ class ApplicationMonitor: ObservableObject {
         
         workspaceObservation = center.publisher(for: NSWorkspace.didLaunchApplicationNotification)
             .merge(with: center.publisher(for: NSWorkspace.didTerminateApplicationNotification))
-            .sink { [weak self] _ in
+            .sink { [weak self] notification in
+                if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                   let bundleID = app.bundleIdentifier {
+                    LoggerService.shared.log(category: .detection, level: .debug, message: "[ApplicationMonitor] NSWorkspace notification: \(bundleID) \(notification.name == NSWorkspace.didLaunchApplicationNotification ? "launched" : "terminated")")
+                }
                 self?.checkForRunningApps()
             }
     }
@@ -148,53 +183,89 @@ class ApplicationMonitor: ObservableObject {
     }
     
     private func checkForRunningApps() {
+        let enabled = enabledApps
         let runningApps = NSWorkspace.shared.runningApplications
-        
-        // Find if any supported meeting app is running
-        if let foundApp = runningApps.first(where: { app in
-            guard let bundleId = app.bundleIdentifier else { return false }
-            return monitoredApps.contains { $0.bundleIdentifier == bundleId }
-        }) {
-            handleAppDetected(foundApp)
+
+        var newAppStates: [String: PerAppState] = [:]
+        var hasRunning = false
+
+        for app in enabled {
+            if let running = runningApps.first(where: { $0.bundleIdentifier == app.bundleIdentifier }) {
+                let existingState = appStates[app.bundleIdentifier]
+                let meetingState: MeetingState
+                if let existing = existingState {
+                    switch existing.meetingState {
+                    case .notRunning:
+                        meetingState = .running(pid: running.processIdentifier)
+                    case .running, .inMeeting:
+                        meetingState = .running(pid: running.processIdentifier)
+                    }
+                } else {
+                    meetingState = .running(pid: running.processIdentifier)
+                }
+                newAppStates[app.bundleIdentifier] = PerAppState(
+                    config: app,
+                    meetingState: meetingState,
+                    windowPollCount: existingState?.windowPollCount ?? 0
+                )
+                hasRunning = true
+            } else {
+                if let existing = appStates[app.bundleIdentifier] {
+                    var state = existing
+                    state.meetingState = .notRunning
+                    state.windowPollCount = 0
+                    newAppStates[app.bundleIdentifier] = state
+                } else {
+                    newAppStates[app.bundleIdentifier] = PerAppState(config: app)
+                }
+            }
+        }
+
+        appStates = newAppStates
+        updateActiveMeetingApps()
+
+        if hasRunning {
+            startWindowPolling()
         } else {
-            handleAppTerminated()
+            stopWindowPolling()
         }
+
+        logger.log(category: .detection, level: .debug, message: """
+            [ApplicationMonitor] checkForRunningApps: \(enabled.count) enabled, \
+            \(appStates.filter { if case .running = $0.value.meetingState { true } else { false } }.count) running, \
+            \(activeMeetingApps.count) in-meeting
+            """)
     }
-    
-    private func handleAppDetected(_ nsApp: NSRunningApplication) {
-        guard let config = monitoredApps.first(where: { $0.bundleIdentifier == nsApp.bundleIdentifier }) else { return }
-        
-        // 如果是从非运行状态切换过来，或者切换了App
-        if case .notRunning = meetingState {
-            logger.log(category: .detection, level: .info, message: "ApplicationMonitor: Detected \(config.processName) (PID: \(nsApp.processIdentifier))")
-            currentMeetingApp = config
-            meetingState = .running(pid: nsApp.processIdentifier)
-            
-            // Start Level 2: Window Polling
-            startWindowPolling(for: config, pid: nsApp.processIdentifier)
+
+    func reloadEnabledApps() {
+        let newEnabled = enabledApps
+        let newBundleIDs = Set(newEnabled.map(\.bundleIdentifier))
+
+        for bundleID in appStates.keys where !newBundleIDs.contains(bundleID) {
+            appStates.removeValue(forKey: bundleID)
+            logger.log(category: .detection, level: .info, message: "[ApplicationMonitor] Removed disabled app: \(bundleID)")
         }
+
+        checkForRunningApps()
     }
-    
-    private func handleAppTerminated() {
-        if case .notRunning = meetingState { return }
-        
-        logger.log(category: .detection, level: .info, message: "ApplicationMonitor: Target app terminated")
-        currentMeetingApp = nil
-        meetingState = .notRunning
-        stopWindowPolling()
+
+    private func updateActiveMeetingApps() {
+        activeMeetingApps = Set(
+            appStates.compactMap { bundleID, state in
+                if case .inMeeting = state.meetingState { return bundleID }
+                return nil
+            }
+        )
     }
-    
+
     // MARK: - Window Monitoring (Level 2)
     
-    private func startWindowPolling(for app: MonitoredApp, pid: pid_t) {
-        stopWindowPolling() // Stop existing if any
-
-        logger.log(category: .detection, level: .debug, message: "ApplicationMonitor: Starting window polling for \(app.processName)")
-
-        // 每 2 秒检查一次窗口，避免过高 CPU
+    private func startWindowPolling() {
+        guard windowCheckTimer == nil else { return }
+        logger.log(category: .detection, level: .debug, message: "[ApplicationMonitor] Starting window polling")
         windowCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.checkWindows(for: app, pid: pid)
+                self?.checkWindows()
             }
         }
     }
@@ -202,61 +273,85 @@ class ApplicationMonitor: ObservableObject {
     private func stopWindowPolling() {
         windowCheckTimer?.invalidate()
         windowCheckTimer = nil
+        logger.log(category: .detection, level: .debug, message: "[ApplicationMonitor] Window polling stopped")
     }
     
-    private func checkWindows(for config: MonitoredApp, pid: pid_t) {
-        // 使用 Accessibility API (AXUIElement) 获取窗口标题
-        // 这需要 "辅助功能" 权限
-        
-        let appElement = AXUIElementCreateApplication(pid)
-        
-        var windowsRef: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        
-        guard result == .success, let windows = windowsRef as? [AXUIElement] else {
-            // 如果获取失败，可能是没有权限或没有窗口
-            // 可以在这里加一个 debouncer 或者是权限检查日志
-            if !AXIsProcessTrusted() {
-                logger.log(category: .detection, level: .error, message: "ApplicationMonitor: No Accessibility permission.")
+    private func checkWindows() {
+        for (bundleID, state) in appStates {
+            let pid: pid_t
+            switch state.meetingState {
+            case .running(let p), .inMeeting(let p):
+                pid = p
+            default:
+                continue
             }
-            return
-        }
-        
-        // 遍历窗口
-        let detected = windows.contains { window in
-            var titleRef: CFTypeRef?
-            let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
-            
-            guard titleResult == .success, let title = titleRef as? String else {
-                return false
-            }
-            
-            // 匹配标题特征
-            for pattern in config.meetingWindowPatterns {
-                if title.localizedCaseInsensitiveContains(pattern) {
-                    logger.log(category: .detection, level: .debug, message: "ApplicationMonitor: Matched window title '\(title)' for \(config.processName)")
-                    return true
+            let config = state.config
+
+            guard !config.meetingWindowPatterns.isEmpty else { continue }
+
+            logger.log(category: .detection, level: .debug, message: "[ApplicationMonitor] AX poll: checking windows for \(config.processName) (pid: \(pid))")
+
+            let appElement = AXUIElementCreateApplication(pid)
+            var windowsRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+            guard result == .success, let windows = windowsRef as? [AXUIElement] else {
+                if !AXIsProcessTrusted() {
+                    logger.log(category: .detection, level: .error, message: "[ApplicationMonitor] No Accessibility permission")
                 }
+                continue
             }
-            
-            return false
+
+            let detected = windows.contains { window in
+                var titleRef: CFTypeRef?
+                let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+                guard titleResult == .success, let title = titleRef as? String else { return false }
+
+                let matchedPattern = config.meetingWindowPatterns.first { title.localizedCaseInsensitiveContains($0) }
+                guard let matched = matchedPattern else {
+                    logger.log(category: .detection, level: .debug, message: "[Signal.AX] '\(title)' did not match any pattern for \(config.processName)")
+                    return false
+                }
+
+                if let excludedBy = config.excludeWindowPatterns.first(where: { title.localizedCaseInsensitiveContains($0) }) {
+                    logger.log(category: .detection, level: .debug, message: "[Signal.AX] '\(title)' matched '\(matched)' BUT excluded by '\(excludedBy)'")
+                    return false
+                }
+
+                logger.log(category: .detection, level: .debug, message: "[Signal.AX] '\(title)' matched pattern '\(matched)'")
+                return true
+            }
+
+            if !detected {
+                logger.log(category: .detection, level: .debug, message: "[Signal.AX] no matching window for \(config.processName)")
+            }
+
+            updateAppMeetingState(bundleID: bundleID, detected: detected, pid: pid)
         }
-        
-        updateMeetingState(detected: detected, pid: pid)
     }
     
-    private func updateMeetingState(detected: Bool, pid: pid_t) {
-        switch (meetingState, detected) {
+    private func updateAppMeetingState(bundleID: String, detected: Bool, pid: pid_t) {
+        guard var state = appStates[bundleID] else { return }
+        let oldState = state.meetingState
+
+        switch (oldState, detected) {
         case (.running, true):
-            logger.log(category: .detection, level: .info, message: "ApplicationMonitor: Meeting window detected!")
-            meetingState = .inMeeting(pid: pid)
-            
+            state.meetingState = .inMeeting(pid: pid)
+            logger.log(category: .detection, level: .info, message: "[ApplicationMonitor] \(state.config.processName): meeting window detected")
+
         case (.inMeeting, false):
-            logger.log(category: .detection, level: .info, message: "ApplicationMonitor: Meeting window disappeared.")
-            meetingState = .running(pid: pid)
-            
+            state.meetingState = .running(pid: pid)
+            logger.log(category: .detection, level: .info, message: "[ApplicationMonitor] \(state.config.processName): meeting window disappeared")
+
         default:
             break
+        }
+
+        appStates[bundleID] = state
+
+        if oldState != state.meetingState {
+            logger.log(category: .detection, level: .debug, message: "[ApplicationMonitor] \(state.config.processName): \(oldState) → \(state.meetingState)")
+            updateActiveMeetingApps()
         }
     }
 }

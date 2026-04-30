@@ -40,6 +40,13 @@ enum LogLevel {
     }
 }
 
+extension LogLevel: Comparable {
+    static func < (lhs: LogLevel, rhs: LogLevel) -> Bool {
+        let order: [LogLevel: Int] = [.error: 0, .warning: 1, .info: 2, .debug: 3]
+        return order[lhs]! < order[rhs]!
+    }
+}
+
 /// Centralized logging service with file and console output.
 class LoggerService {
     static let shared = LoggerService()
@@ -54,7 +61,11 @@ class LoggerService {
     private let queue = DispatchQueue(label: "com.meetingsonar.logger", qos: .utility)
     
     private var currentLogDateString: String = ""
-    private let maxLogAgeDays: Double = 7
+    private let maxLogAgeDays: Double = 30
+
+    /// Minimum log level to output. Messages below this level are filtered.
+    /// Runtime-mutable so debug mode can be toggled without app restart.
+    var minimumLevel: LogLevel = .info
     
     // MARK: - Initialization
     
@@ -163,6 +174,9 @@ class LoggerService {
     
     /// Log a message with category and level
     func log(category: LogCategory, level: LogLevel = .info, message: String) {
+        // Filter: skip messages below minimum level
+        guard level <= minimumLevel else { return }
+
         let timestamp = dateFormatter.string(from: Date())
         let levelStr = String(describing: level).uppercased()
         let formattedMessage = "[\(timestamp)] [\(levelStr)] [\(category.rawValue)] \(message)"
