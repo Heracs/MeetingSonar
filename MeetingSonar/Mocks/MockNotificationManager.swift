@@ -6,6 +6,7 @@
 //
 
 import Foundation
+@testable import MeetingSonar
 
 /// Mock implementation for testing notification functionality
 @MainActor

@@ -82,10 +82,23 @@ final class AudioMixerService {
     private var samplesPerChunk: Int { AudioConstants.samplesPerChunk }
     
     /// Whether mixing is active
-    private(set) var isActive = false
-    
+    var isActive: Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return _isActive
+    }
+
     /// Whether mixing is paused (v0.2)
-    private(set) var isPaused = false
+    var isPaused: Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return _isPaused
+    }
+
+    /// Serializes lifecycle state and DispatchSource ownership.
+    private let lifecycleLock = NSLock()
+    private var _isActive = false
+    private var _isPaused = false
     
     /// Processing queue for thread safety
     private let processingQueue = DispatchQueue(label: "com.meetingsonar.audiomixer", qos: .userInteractive)
@@ -129,6 +142,17 @@ final class AudioMixerService {
     init() {
         setupOutputFormat()
     }
+
+    deinit {
+        lifecycleLock.lock()
+        let timer = mixTimer
+        mixTimer = nil
+        _isActive = false
+        _isPaused = false
+        lifecycleLock.unlock()
+
+        timer?.cancel()
+    }
     
     // MARK: - Setup
     
@@ -160,54 +184,53 @@ final class AudioMixerService {
     // MARK: - Public Methods
     
     func start() {
-        guard !isActive else { return }
-        isActive = true
+        lifecycleLock.lock()
+        guard !_isActive else {
+            lifecycleLock.unlock()
+            return
+        }
+
+        let timer = DispatchSource.makeTimerSource(queue: processingQueue)
+        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(20))
+        timer.setEventHandler { [weak self] in
+            self?.outputMixedChunk()
+        }
+
         frameCounter = 0
         totalChunksOutput = 0
         systemBuffersReceived = 0
         micBuffersReceived = 0
-        
+
         bufferLock.lock()
         systemBuffer.removeAll()
         micBuffer.removeAll()
         bufferLock.unlock()
-        
-        // Start mixing timer (fires every 20ms to output mixed audio)
-        mixTimer = DispatchSource.makeTimerSource(queue: processingQueue)
-        mixTimer?.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(20))
-        mixTimer?.setEventHandler { [weak self] in
-            self?.outputMixedChunk()
-        }
-        mixTimer?.resume()
+
+        mixTimer = timer
+        _isActive = true
+        _isPaused = false
+        timer.resume()
+        lifecycleLock.unlock()
 
         LoggerService.shared.log(category: .audio, level: .debug, message: "[AudioMixerService] Started - Target: \(Int(targetSampleRate))Hz, \(targetChannelCount)ch, \(framesPerChunk) frames/chunk")
     }
     
     func stop() {
-        guard isActive else { return }
-
-        // CRITICAL FIX: If timer is suspended (paused), it MUST be resumed before cancellation/release
-        // otherwise it causes a crash (EXC_BREAKPOINT)
-        // Additionally, we must guard against nil timer to prevent crashes
-        guard let timer = mixTimer else {
-            // Timer is nil, just update state and return
-            isActive = false
-            isPaused = false
+        lifecycleLock.lock()
+        guard _isActive else {
+            lifecycleLock.unlock()
             return
         }
 
-        if isPaused {
-            timer.resume()
-        }
-
-        isActive = false
-        isPaused = false
-
-        timer.cancel()
+        let timer = mixTimer
         mixTimer = nil
+        _isActive = false
+        _isPaused = false
+        lifecycleLock.unlock()
+        timer?.cancel()
         
         // Output any remaining data
-        outputMixedChunk()
+        outputMixedChunk(allowWhenInactive: true)
         
         bufferLock.lock()
         systemBuffer.removeAll()
@@ -222,11 +245,13 @@ final class AudioMixerService {
 
     /// Pause mixing (v0.2 - for sleep/lock events)
     func pause() {
-        guard isActive, !isPaused else { return }
-        isPaused = true
-
-        // Suspend the mix timer
-        mixTimer?.suspend()
+        lifecycleLock.lock()
+        guard _isActive, !_isPaused else {
+            lifecycleLock.unlock()
+            return
+        }
+        _isPaused = true
+        lifecycleLock.unlock()
 
         // Clear buffers to prevent stale audio when resuming
         bufferLock.lock()
@@ -239,11 +264,13 @@ final class AudioMixerService {
 
     /// Resume mixing (v0.2 - after sleep/lock)
     func resume() {
-        guard isActive, isPaused else { return }
-        isPaused = false
-
-        // Resume the mix timer
-        mixTimer?.resume()
+        lifecycleLock.lock()
+        guard _isActive, _isPaused else {
+            lifecycleLock.unlock()
+            return
+        }
+        _isPaused = false
+        lifecycleLock.unlock()
 
         LoggerService.shared.log(category: .audio, level: .debug, message: "[AudioMixerService] Resumed")
     }
@@ -301,10 +328,14 @@ final class AudioMixerService {
     /// - Note: If system audio is disabled, this method returns immediately without processing
     func addSystemAudioSamples(_ sampleBuffer: CMSampleBuffer) {
         // Check service state and individual audio source enabled state
-        guard isActive, !isPaused, isSystemAudioEnabled else { return }
+        let state = currentLifecycleState()
+        guard state.isActive, !state.isPaused, isSystemAudioEnabled else { return }
 
         processingQueue.async { [weak self] in
-            self?.processInput(sampleBuffer: sampleBuffer, isSystemAudio: true)
+            guard let self else { return }
+            let state = self.currentLifecycleState()
+            guard state.isActive, !state.isPaused, self.isSystemAudioEnabled else { return }
+            self.processInput(sampleBuffer: sampleBuffer, isSystemAudio: true)
         }
     }
 
@@ -313,14 +344,24 @@ final class AudioMixerService {
     /// - Note: If microphone is disabled, this method returns immediately without processing
     func addMicrophoneSamples(_ sampleBuffer: CMSampleBuffer) {
         // Check service state and individual audio source enabled state
-        guard isActive, !isPaused, isMicrophoneEnabled else { return }
+        let state = currentLifecycleState()
+        guard state.isActive, !state.isPaused, isMicrophoneEnabled else { return }
 
         processingQueue.async { [weak self] in
-            self?.processInput(sampleBuffer: sampleBuffer, isSystemAudio: false)
+            guard let self else { return }
+            let state = self.currentLifecycleState()
+            guard state.isActive, !state.isPaused, self.isMicrophoneEnabled else { return }
+            self.processInput(sampleBuffer: sampleBuffer, isSystemAudio: false)
         }
     }
     
     // MARK: - Private Methods
+
+    private func currentLifecycleState() -> (isActive: Bool, isPaused: Bool) {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return (_isActive, _isPaused)
+    }
     
     /// Process incoming audio and add to appropriate buffer
     private func processInput(sampleBuffer: CMSampleBuffer, isSystemAudio: Bool) {
@@ -394,7 +435,12 @@ final class AudioMixerService {
     /// 1. Check if each source is enabled and has enough data
     /// 2. If both sources are disabled, still output silence to maintain time continuity
     /// 3. Only mix enabled sources' data
-    private func outputMixedChunk() {
+    private func outputMixedChunk(allowWhenInactive: Bool = false) {
+        if !allowWhenInactive {
+            let state = currentLifecycleState()
+            guard state.isActive, !state.isPaused else { return }
+        }
+
         bufferLock.lock()
 
         // Check if each source is enabled and has enough data

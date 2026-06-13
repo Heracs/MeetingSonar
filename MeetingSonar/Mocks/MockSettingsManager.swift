@@ -7,6 +7,8 @@
 
 import Foundation
 import SwiftUI
+import Combine
+@testable import MeetingSonar
 
 /// Mock settings manager for unit testing
 ///
@@ -41,14 +43,14 @@ final class MockSettingsManager: ObservableObject {
 
     // Western Apps
     @Published var detectZoom: Bool = true
-    @Published var detectTeamsClassic: Bool = true
+    @Published var detectTeamsClassic: Bool = false
     @Published var detectTeamsNew: Bool = true
-    @Published var detectWebex: Bool = true
+    @Published var detectWebex: Bool = false
 
-    /// Unified Teams detection (controls both Classic and New) - F-0.10.2
+    /// Unified Teams detection controls Teams New only.
     var detectTeams: Bool {
-        get { detectTeamsClassic || detectTeamsNew }
-        set { detectTeamsClassic = newValue; detectTeamsNew = newValue }
+        get { detectTeamsNew }
+        set { detectTeamsNew = newValue }
     }
 
     // Chinese Apps
@@ -126,9 +128,9 @@ final class MockSettingsManager: ObservableObject {
         autoRecordingDefaultConfig = .default
         manualRecordingDefaultConfig = .systemOnly
         detectZoom = true
-        detectTeamsClassic = true
+        detectTeamsClassic = false
         detectTeamsNew = true
-        detectWebex = true
+        detectWebex = false
         detectTencentMeeting = true
         detectFeishu = true
         detectWeChat = false
@@ -153,9 +155,9 @@ final class MockSettingsManager: ObservableObject {
         autoRecordingDefaultConfig = .default
         manualRecordingDefaultConfig = .systemOnly
         detectZoom = true
-        detectTeamsClassic = true
+        detectTeamsClassic = false
         detectTeamsNew = true
-        detectWebex = true
+        detectWebex = false
         detectTencentMeeting = true
         detectFeishu = true
         detectWeChat = false
@@ -166,9 +168,9 @@ final class MockSettingsManager: ObservableObject {
     /// Configure all app detection settings to enabled
     func enableAllAppDetection() {
         detectZoom = true
-        detectTeamsClassic = true
+        detectTeamsClassic = false
         detectTeamsNew = true
-        detectWebex = true
+        detectWebex = false
         detectTencentMeeting = true
         detectFeishu = true
         detectWeChat = true

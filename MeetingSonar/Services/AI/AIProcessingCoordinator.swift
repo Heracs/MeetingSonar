@@ -1,6 +1,16 @@
 import Foundation
 
-/// AI 处理协调器 - 云端版本
+/// Result of a completed full AI processing pipeline.
+struct AIProcessingResult: Sendable {
+    let transcriptText: String
+    let transcriptURL: URL
+    let transcriptVersion: TranscriptVersion
+    let summaryText: String
+    let summaryURL: URL
+    let summaryVersion: SummaryVersion
+}
+
+/// AI 处理协调器 - provider-aware 版本
 /// 协调 ASR 和 LLM 的处理流程
 @MainActor
 class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol {
@@ -24,6 +34,8 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
 
     /// The meeting ID currently being processed (used to scope progress UI to the correct recording)
     @Published var processingMeetingID: UUID?
+
+    private let runtimeFactory = AIProviderRuntimeFactory()
 
     // MARK: - Processing Stage
 
@@ -72,13 +84,13 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
     // MARK: - Initialization
 
     private init() {
-        LoggerService.shared.log(category: .ai, message: "AIProcessingCoordinator initialized (cloud-only mode)")
+        LoggerService.shared.log(category: .ai, message: "AIProcessingCoordinator initialized (provider-aware mode)")
     }
 
     // MARK: - Main Processing Pipeline
 
     /// 处理音频文件 - 完整流程：ASR → 持久化 → LLM → 持久化
-    func process(audioURL: URL, meetingID: UUID) async {
+    func process(audioURL: URL, meetingID: UUID) async throws -> AIProcessingResult {
         LoggerService.shared.log(category: .ai, message: "Starting AI processing pipeline for meeting: \(meetingID)")
 
         isProcessing = true
@@ -88,6 +100,8 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         let startTime = Date()
 
         do {
+            await updateMetadataStatus(meetingID: meetingID, status: .processing)
+
             // Stage 1: ASR
             currentStage = .splitting
             progressDetail = String(localized: "processing.detail.preparing", defaultValue: "准备音频文件...")
@@ -98,7 +112,7 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
             // Stage 2: Persist Transcript
             currentStage = .persistingTranscript
             progressDetail = String(localized: "processing.detail.saving_transcript", defaultValue: "保存转录结果...")
-            let (_, transcriptVersion) = try await persistTranscriptWithVersion(
+            let (transcriptURL, transcriptVersion) = try await persistTranscriptWithVersion(
                 result: result,
                 audioURL: audioURL,
                 meetingID: meetingID,
@@ -117,11 +131,12 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
             // Stage 4: Persist Summary
             currentStage = .persistingSummary
             progressDetail = String(localized: "processing.detail.saving_summary", defaultValue: "保存会议纪要...")
-            _ = try await persistSummaryWithVersion(
+            let (summaryURL, summaryVersion) = try await persistSummaryWithVersion(
                 summary,
                 audioURL: audioURL,
                 sourceTranscriptId: transcriptVersion.id,
-                meetingID: meetingID
+                meetingID: meetingID,
+                processingTime: llmProcessingTime
             )
             progress = 1.0
 
@@ -130,14 +145,25 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
             progressDetail = String(localized: "processing.detail.done", defaultValue: "处理完成")
             LoggerService.shared.log(category: .ai, message: "AI processing pipeline completed for meeting: \(meetingID)")
 
+            isProcessing = false
+            return AIProcessingResult(
+                transcriptText: result.text,
+                transcriptURL: transcriptURL,
+                transcriptVersion: transcriptVersion,
+                summaryText: summary,
+                summaryURL: summaryURL,
+                summaryVersion: summaryVersion
+            )
+
         } catch {
             lastError = error
             currentStage = .failed(error.localizedDescription)
             progressDetail = error.localizedDescription
+            await updateMetadataStatus(meetingID: meetingID, status: .failed)
             LoggerService.shared.log(category: .ai, level: .error, message: "AI processing pipeline failed: \(error.localizedDescription)")
+            isProcessing = false
+            throw error
         }
-
-        isProcessing = false
     }
 
     /// 仅执行 ASR（不生成摘要）
@@ -161,6 +187,8 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         let startTime = Date()
 
         do {
+            await updateMetadataStatus(meetingID: meetingID, status: .processing)
+
             currentStage = .splitting
             progressDetail = String(localized: "processing.detail.preparing", defaultValue: "准备音频文件...")
             let result = try await performASRWithResult(audioURL: audioURL, meetingID: meetingID)
@@ -179,6 +207,7 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
 
             currentStage = .completed
             progressDetail = String(localized: "processing.detail.done", defaultValue: "处理完成")
+            await updateMetadataStatus(meetingID: meetingID, status: .completed)
             LoggerService.shared.log(category: .ai, message: "ASR processing completed for meeting: \(meetingID), version: \(version.versionNumber)")
 
             isProcessing = false
@@ -188,6 +217,7 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
             lastError = error
             currentStage = .failed(error.localizedDescription)
             progressDetail = error.localizedDescription
+            await updateMetadataStatus(meetingID: meetingID, status: .failed)
             LoggerService.shared.log(category: .ai, level: .error, message: "ASR processing failed: \(error.localizedDescription)")
             isProcessing = false
             return (nil, nil, nil)
@@ -224,12 +254,16 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         meetingID: UUID? = nil
     ) async throws -> (String, URL, UUID) {
         let actualMeetingID = meetingID ?? UUID()
+        let llmStartTime = Date()
         let summary = try await performLLM(transcript: transcriptText, meetingID: actualMeetingID)
+        let llmProcessingTime = Date().timeIntervalSince(llmStartTime)
         // 保存摘要并返回 URL
         let (summaryURL, summaryVersion) = try await persistSummaryWithVersion(
             summary,
             audioURL: audioURL,
-            sourceTranscriptId: sourceTranscriptId
+            sourceTranscriptId: sourceTranscriptId,
+            meetingID: actualMeetingID,
+            processingTime: llmProcessingTime
         )
         return (summary, summaryURL, summaryVersion.id)
     }
@@ -355,6 +389,13 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         ]
     }
 
+    private func buildLLMMessages(systemPrompt: String, transcript: String) -> [LLMMessage] {
+        return [
+            LLMMessage(role: ChatMessage.MessageRole.system.rawValue, content: systemPrompt),
+            LLMMessage(role: ChatMessage.MessageRole.user.rawValue, content: transcript)
+        ]
+    }
+
     /// 调用云端LLM API生成摘要
     ///
     /// - Parameters:
@@ -385,6 +426,23 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         }
     }
 
+    func resolveLLMRuntimeForCurrentSelection() async throws -> any LLMRuntime {
+        let selectedID = SettingsManager.shared.selectedUnifiedLLMId
+        let selectedConfig = await AIProviderConfigStore.shared.config(byId: selectedID)
+        let fallbackConfig: AIProviderConfig?
+        if selectedConfig == nil {
+            fallbackConfig = await AIProviderConfigStore.shared.configs(for: .llm).first
+        } else {
+            fallbackConfig = nil
+        }
+
+        guard let config = selectedConfig ?? fallbackConfig else {
+            throw AIProviderRuntimeError.missingCapability(.llm)
+        }
+
+        return try runtimeFactory.makeLLMRuntime(config: config)
+    }
+
     /// 执行 LLM 摘要生成（重构后版本）
     ///
     /// - Parameters:
@@ -394,6 +452,37 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
     /// - Throws: AIProcessingError 如果处理失败
     private func performLLM(transcript: String, meetingID: UUID) async throws -> String {
         LoggerService.shared.log(category: .ai, message: "Starting LLM summary generation for meeting: \(meetingID)")
+
+        // 获取选中的提示词
+        let promptContent = await PromptManager.shared.getSelectedPromptContent(for: .llm)
+
+        // 构建提示词
+        let systemPrompt = buildSystemPrompt(promptContent: promptContent)
+
+        do {
+            let runtime = try await resolveLLMRuntimeForCurrentSelection()
+            let result = try await runtime.generateSummary(
+                messages: buildLLMMessages(systemPrompt: systemPrompt, transcript: transcript),
+                context: LLMRuntimeContext(
+                    meetingID: meetingID,
+                    temperature: 0.7,
+                    maxTokens: 4096
+                )
+            )
+
+            LoggerService.shared.log(category: .ai, message: """
+            \(LoggingPrefix.llmService) Successfully generated summary for meeting: \(meetingID)
+            ├─ Provider: \(runtime.providerKey)
+            └─ Model: \(runtime.modelName)
+            """)
+
+            return result.content
+        } catch AIProviderRuntimeError.missingCapability {
+            LoggerService.shared.log(category: .ai, level: .debug, message: """
+            \(LoggingPrefix.llmService) Provider runtime not configured
+            └─ Fallback: legacy cloud LLM path
+            """)
+        }
 
         // 获取模型配置
         let (config, apiKey, llmSettings) = try await getLLMModelConfiguration(
@@ -406,12 +495,6 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
             apiKey: apiKey,
             baseURL: config.baseURL
         )
-
-        // 获取选中的提示词
-        let promptContent = await PromptManager.shared.getSelectedPromptContent(for: .llm)
-
-        // 构建提示词
-        let systemPrompt = buildSystemPrompt(promptContent: promptContent)
 
         // 构建消息
         let messages = buildChatMessages(systemPrompt: systemPrompt, transcript: transcript)
@@ -472,28 +555,14 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         _ text: String,
         audioURL: URL,
         sourceTranscriptId: UUID,
-        meetingID: UUID? = nil
+        meetingID: UUID? = nil,
+        processingTime: TimeInterval = 0
     ) async throws -> (URL, SummaryVersion) {
-        let actualMeetingID = meetingID ?? UUID()
-        let startTime = Date()
-
-        // 获取音频文件 basename
-        let basename = audioURL.deletingPathExtension().lastPathComponent
-
-        // 查找或创建 meeting 记录
-        var targetMeetingID = actualMeetingID
-        if let index = MetadataManager.shared.recordings.firstIndex(where: {
-            $0.filename.hasPrefix(basename)
-        }) {
-            targetMeetingID = MetadataManager.shared.recordings[index].id
-        }
-
-        // 计算处理时间
-        let processingTime = Date().timeIntervalSince(startTime)
+        let actualMeetingID = try resolveMeetingID(for: audioURL, explicitMeetingID: meetingID)
 
         // 使用 VersionManager 创建版本
         let version = try await VersionManager.shared.createSummaryVersion(
-            meetingId: targetMeetingID,
+            meetingId: actualMeetingID,
             summaryText: text,
             audioURL: audioURL,
             sourceTranscriptId: sourceTranscriptId,
@@ -503,6 +572,31 @@ class AIProcessingCoordinator: ObservableObject, AIProcessingCoordinatorProtocol
         // 返回文件 URL
         let fileURL = PathManager.shared.rootDataURL.appendingPathComponent(version.filePath)
         return (fileURL, version)
+    }
+
+    private func resolveMeetingID(for audioURL: URL, explicitMeetingID: UUID?) throws -> UUID {
+        if let explicitMeetingID {
+            return explicitMeetingID
+        }
+
+        let filename = audioURL.lastPathComponent
+        let basename = audioURL.deletingPathExtension().lastPathComponent
+        if let meta = MetadataManager.shared.recordings.first(where: {
+            $0.filename == filename || $0.filename.hasPrefix(basename)
+        }) {
+            return meta.id
+        }
+
+        throw VersionManagementError.meetingNotFound
+    }
+
+    private func updateMetadataStatus(
+        meetingID: UUID,
+        status: MeetingMeta.ProcessingStatus
+    ) async {
+        guard var meta = MetadataManager.shared.get(id: meetingID) else { return }
+        meta.status = status
+        await MetadataManager.shared.update(meta)
     }
 
     // MARK: - Reset

@@ -13,6 +13,7 @@ import SwiftUI
 struct DetailView: View {
 
     let recordingID: UUID
+    @Binding private var selectedRecordingID: UUID?
     @ObservedObject private var manager = MetadataManager.shared
     @StateObject private var playerManager = AudioPlayerManager()
     @StateObject private var promptViewModel = PromptSelectionViewModel()
@@ -24,6 +25,14 @@ struct DetailView: View {
     @ObservedObject private var aiCoordinator = AIProcessingCoordinator.shared
     @State private var showErrorAlert = false
     @State private var errorMessage: String = ""
+    @State private var recordingToDelete: MeetingMeta?
+    @State private var showDeleteErrorAlert = false
+    @State private var deleteErrorMessage = ""
+
+    init(recordingID: UUID, selectedRecordingID: Binding<UUID?> = .constant(nil)) {
+        self.recordingID = recordingID
+        self._selectedRecordingID = selectedRecordingID
+    }
 
     var meta: MeetingMeta? {
         manager.get(id: recordingID)
@@ -122,6 +131,32 @@ struct DetailView: View {
                 } message: {
                     Text(String(localized: "alert.noTranscriptMessage"))
                 }
+                .alert(String(localized: "Delete Recording?"), isPresented: .init(
+                    get: { recordingToDelete != nil },
+                    set: { if !$0 { recordingToDelete = nil } }
+                )) {
+                    Button(String(localized: "button.cancel"), role: .cancel) {
+                        recordingToDelete = nil
+                    }
+                    Button(String(localized: "button.delete"), role: .destructive) {
+                        if let recording = recordingToDelete {
+                            deleteRecording(recording)
+                        }
+                        recordingToDelete = nil
+                    }
+                } message: {
+                    if let recording = recordingToDelete {
+                        Text(String(
+                            format: String(localized: "Are you sure you want to permanently delete '%@'? This cannot be undone."),
+                            recording.title
+                        ))
+                    }
+                }
+                .alert(String(localized: "alert.deleteFailed"), isPresented: $showDeleteErrorAlert) {
+                    Button(String(localized: "button.confirm"), role: .cancel) {}
+                } message: {
+                    Text(deleteErrorMessage)
+                }
             } else {
                 Text("Recording not found")
                     .foregroundColor(.secondary)
@@ -182,8 +217,8 @@ struct DetailView: View {
 
                 Divider()
 
-                Button(role: .destructive, action: { deleteRecording(meta) }) {
-                    Label("删除", systemImage: "trash")
+                Button(role: .destructive, action: { recordingToDelete = meta }) {
+                    Label(String(localized: "button.delete"), systemImage: "trash")
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -205,7 +240,7 @@ struct DetailView: View {
             HStack(spacing: 12) {
                 // ASR Model Picker
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("语音识别模型")
+                    Text("settings.aiServices.asrModel")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
                     Picker("", selection: $settings.selectedUnifiedASRId) {
@@ -220,7 +255,7 @@ struct DetailView: View {
 
                 // LLM Model Picker
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("总结模型")
+                    Text("settings.aiServices.llmModel")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
                     Picker("", selection: $settings.selectedUnifiedLLMId) {
@@ -1074,6 +1109,23 @@ struct DetailView: View {
     }
 
     private func deleteRecording(_ meta: MeetingMeta) {
-        // TODO: Implement delete functionality
+        Task { @MainActor in
+            do {
+                try await MetadataManager.shared.delete(id: meta.id)
+                selectedRecordingID = DashboardSelectionPolicy.selectionAfterDeleting(
+                    currentSelection: selectedRecordingID,
+                    deletedID: meta.id,
+                    remainingRecordings: manager.recordings
+                )
+            } catch {
+                deleteErrorMessage = error.localizedDescription
+                showDeleteErrorAlert = true
+                LoggerService.shared.log(
+                    category: .ui,
+                    level: .error,
+                    message: "[DetailView] Failed to delete recording: \(error.localizedDescription)"
+                )
+            }
+        }
     }
 }

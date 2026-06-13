@@ -7,6 +7,7 @@
 
 import Foundation
 import AVFoundation
+@testable import MeetingSonar
 
 /// Mock recording service for unit testing
 ///
@@ -40,6 +41,10 @@ final class MockRecordingService: RecordingServiceProtocol {
     private(set) var lastStartTrigger: RecordingTrigger?
     /// Last app name passed to startRecording
     private(set) var lastAppName: String?
+    /// Last detection metadata passed to startRecording
+    private(set) var lastDetectionInfo: MeetingDetectionInfo?
+    /// Last explicit stop reason
+    private(set) var lastStopReason: RecordingStopReason?
 
     /// Error to throw from startRecording (nil for success)
     var startRecordingError: Error?
@@ -47,9 +52,18 @@ final class MockRecordingService: RecordingServiceProtocol {
     // MARK: - Recording Control
 
     func startRecording(trigger: RecordingTrigger, appName: String?) async throws {
+        try await startRecording(trigger: trigger, appName: appName, detectionInfo: nil)
+    }
+
+    func startRecording(
+        trigger: RecordingTrigger,
+        appName: String?,
+        detectionInfo: MeetingDetectionInfo?
+    ) async throws {
         startRecordingCalled = true
         lastStartTrigger = trigger
         lastAppName = appName
+        lastDetectionInfo = detectionInfo
 
         if let error = startRecordingError {
             throw error
@@ -60,7 +74,12 @@ final class MockRecordingService: RecordingServiceProtocol {
     }
 
     func stopRecording() {
+        stopRecording(reason: .manualStop)
+    }
+
+    func stopRecording(reason: RecordingStopReason) {
         stopRecordingCalled = true
+        lastStopReason = reason
         recordingState = .idle
     }
 
@@ -98,6 +117,8 @@ final class MockRecordingService: RecordingServiceProtocol {
         resumeRecordingCalled = false
         lastStartTrigger = nil
         lastAppName = nil
+        lastDetectionInfo = nil
+        lastStopReason = nil
         startRecordingError = nil
     }
 

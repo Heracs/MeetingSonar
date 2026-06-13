@@ -8,6 +8,23 @@
 
 import SwiftUI
 
+enum DashboardSelectionPolicy {
+    static func selectionAfterDeleting(
+        currentSelection: UUID?,
+        deletedID: UUID,
+        remainingRecordings: [MeetingMeta]
+    ) -> UUID? {
+        guard currentSelection == deletedID else {
+            return currentSelection
+        }
+
+        return remainingRecordings
+            .sorted { $0.startTime > $1.startTime }
+            .first?
+            .id
+    }
+}
+
 /// Main window for MeetingSonar, providing dashboard access to recordings.
 /// Implements F-11.2 Two-Column Layout.
 struct DashboardView: View {
@@ -26,7 +43,10 @@ struct DashboardView: View {
         } detail: {
             // Right Column: Detail View
             if let recordingID = selectedRecordingID {
-                DetailView(recordingID: recordingID)
+                DetailView(
+                    recordingID: recordingID,
+                    selectedRecordingID: $selectedRecordingID
+                )
             } else {
                 // Empty State
                 VStack(spacing: 16) {

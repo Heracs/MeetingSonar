@@ -32,6 +32,29 @@ struct StreamingSummaryViewModelTests {
         )
     }
 
+    private func createProviderRuntimeConfig() -> AIProviderConfig {
+        AIProviderConfig(
+            id: UUID(),
+            displayName: "Test Runtime LLM",
+            providerKey: "cloud.deepseek",
+            kind: .cloudAPI,
+            enabledCapabilities: [.llm],
+            asr: nil,
+            llm: LLMProviderConfig(
+                modelName: "deepseek-chat",
+                transport: .openAICompatible,
+                endpoint: URL(string: "https://api.deepseek.com/v1"),
+                temperature: 0.2,
+                maxTokens: 2048,
+                supportsStreaming: false
+            ),
+            createdAt: Date(),
+            updatedAt: Date(),
+            revision: 1,
+            isVerified: true
+        )
+    }
+
     private func createTestTranscript() -> String {
         """
         大家好，欢迎参加今天的项目进度会议。
@@ -41,6 +64,18 @@ struct StreamingSummaryViewModelTests {
         用户认证模块已经测试通过，可以上线。
         最后，大家讨论一下下周的工作安排。
         """
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 5,
+        interval: UInt64 = 50_000_000,
+        _ condition: () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            try await Task.sleep(nanoseconds: interval)
+        }
+        #expect(condition())
     }
 
     // MARK: - State Tests
@@ -61,6 +96,8 @@ struct StreamingSummaryViewModelTests {
     func testStateTransitionIdleToConnecting() async throws {
         let viewModel = StreamingSummaryViewModel()
         let mockProvider = MockCloudServiceProvider()
+        mockProvider.simulateNetworkDelay = true
+        mockProvider.networkDelay = 0.5
         let config = createTestConfig()
         let transcript = createTestTranscript()
         let meetingID = UUID()
@@ -115,6 +152,26 @@ struct StreamingSummaryViewModelTests {
         viewModel.stopStreaming()
     }
 
+    @Test("Provider runtime path completes with runtime response")
+    func testProviderRuntimePathCompletesWithRuntimeResponse() async {
+        let viewModel = StreamingSummaryViewModel()
+        let config = createProviderRuntimeConfig()
+        let runtime = MockLLMRuntime(response: "Runtime summary")
+
+        await viewModel.startStreaming(
+            transcript: "Runtime transcript",
+            prompt: "Summarize clearly",
+            config: config,
+            runtime: runtime,
+            meetingID: UUID(),
+            sourceTranscriptId: UUID()
+        )
+
+        #expect(viewModel.streamingText == "Runtime summary")
+        #expect(viewModel.state == .completed(text: "Runtime summary"))
+        #expect(viewModel.errorMessage.isEmpty)
+    }
+
     @Test("State transitions to cancelled when stopped")
     func testStateTransitionToCancelled() async throws {
         let viewModel = StreamingSummaryViewModel()
@@ -167,7 +224,12 @@ struct StreamingSummaryViewModelTests {
         )
 
         // Wait for error
-        try await Task.sleep(nanoseconds: 300_000_000) // 0.3s
+        try await waitUntil {
+            if case .failed = viewModel.state {
+                return true
+            }
+            return false
+        }
 
         if case .failed = viewModel.state {
             // Expected
@@ -267,7 +329,12 @@ struct StreamingSummaryViewModelTests {
             provider: mockProvider
         )
 
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await waitUntil {
+            if case .failed = viewModel.state {
+                return true
+            }
+            return false
+        }
 
         // Verify failed state
         if case .failed = viewModel.state {
@@ -288,7 +355,9 @@ struct StreamingSummaryViewModelTests {
             provider: mockProvider
         )
 
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitUntil {
+            viewModel.isComplete && viewModel.streamingText == "Success!"
+        }
 
         // Should succeed now
         #expect(viewModel.isComplete)
@@ -314,7 +383,9 @@ struct StreamingSummaryViewModelTests {
             provider: mockProvider
         )
 
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await waitUntil {
+            !viewModel.errorMessage.isEmpty
+        }
 
         #expect(!viewModel.errorMessage.isEmpty)
 
@@ -492,5 +563,29 @@ struct StreamingSummaryViewModelTests {
 
         #expect(viewModel.streamingText == "这是一个测试消息")
         #expect(viewModel.wordCount == 8) // Character count for Chinese
+    }
+}
+
+private struct MockLLMRuntime: LLMRuntime {
+    let configID = UUID()
+    let providerKey = "test.llm"
+    let modelName = "test-model"
+    let response: String
+
+    func validate() async throws -> AIProviderValidationResult {
+        AIProviderValidationResult(isValid: true, message: "Valid")
+    }
+
+    func generateSummary(
+        messages: [LLMMessage],
+        context: LLMRuntimeContext
+    ) async throws -> LLMCompletionResult {
+        #expect(messages.count == 2)
+        #expect(messages.first?.role == ChatMessage.MessageRole.system.rawValue)
+        #expect(messages.last?.role == ChatMessage.MessageRole.user.rawValue)
+        #expect(context.temperature == 0.2)
+        #expect(context.maxTokens == 2048)
+
+        return LLMCompletionResult(content: response, modelName: modelName, usage: nil)
     }
 }

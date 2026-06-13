@@ -166,7 +166,7 @@ enum SampleData {
     }
 
     static var supportedQualities: [AudioQuality] {
-        [.low, .medium, .high]
+        [.low, .high]
     }
 
     // MARK: - Recording State Samples

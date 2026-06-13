@@ -3,7 +3,7 @@
 //  MeetingSonarTests
 //
 //  Comprehensive tests for ApplicationMonitor enabledApps filtering logic.
-//  Tests that the filtering correctly respects user settings for all 7 apps.
+//  Tests that filtering correctly respects user settings for active v0.13 app targets.
 //
 
 import Testing
@@ -23,12 +23,10 @@ struct ApplicationMonitorTests {
         let processName: String
     }
 
-    /// All 7 monitored apps for testing
+    /// Active v0.13 monitored apps for testing.
     let allApps: [TestMonitoredApp] = [
         TestMonitoredApp(bundleIdentifier: "us.zoom.xos", processName: "zoom.us"),
-        TestMonitoredApp(bundleIdentifier: "com.microsoft.teams", processName: "Microsoft Teams"),
         TestMonitoredApp(bundleIdentifier: "com.microsoft.teams2", processName: "MSTeams"),
-        TestMonitoredApp(bundleIdentifier: "com.cisco.webex.webex", processName: "Webex"),
         TestMonitoredApp(bundleIdentifier: "com.tencent.meeting", processName: "TencentMeeting"),
         TestMonitoredApp(bundleIdentifier: "com.electron.lark.iron", processName: "Feishu"),
         TestMonitoredApp(bundleIdentifier: "com.tencent.xinWeChat", processName: "WeChat")
@@ -38,16 +36,10 @@ struct ApplicationMonitorTests {
     func filterApps(_ apps: [TestMonitoredApp], settings: MockSettingsManager) -> [TestMonitoredApp] {
         return apps.filter { app in
             switch app.bundleIdentifier {
-            // Western Apps
             case "us.zoom.xos":
                 return settings.detectZoom
-            case "com.microsoft.teams":
-                return settings.detectTeamsClassic
             case "com.microsoft.teams2":
                 return settings.detectTeamsNew
-            case "com.cisco.webex.webex":
-                return settings.detectWebex
-            // Chinese Apps
             case "com.tencent.meeting":
                 return settings.detectTencentMeeting
             case "com.electron.lark.iron":
@@ -55,7 +47,7 @@ struct ApplicationMonitorTests {
             case "com.tencent.xinWeChat":
                 return settings.detectWeChat
             default:
-                return true
+                return false
             }
         }
     }
@@ -66,9 +58,7 @@ struct ApplicationMonitorTests {
     func expectedEnabledCount(settings: MockSettingsManager) -> Int {
         var count = 0
         if settings.detectZoom { count += 1 }
-        if settings.detectTeamsClassic { count += 1 }
         if settings.detectTeamsNew { count += 1 }
-        if settings.detectWebex { count += 1 }
         if settings.detectTencentMeeting { count += 1 }
         if settings.detectFeishu { count += 1 }
         if settings.detectWeChat { count += 1 }
@@ -76,6 +66,60 @@ struct ApplicationMonitorTests {
     }
 
     // MARK: - Default State Tests
+
+    @Test("ApplicationMonitor active target list excludes Webex and Teams Classic")
+    func testApplicationMonitorExcludesRemovedLegacyTargets() async throws {
+        let monitor = ApplicationMonitor()
+        let bundleIds = monitor.monitoredApps.map(\.bundleIdentifier)
+
+        #expect(!bundleIds.contains("com.microsoft.teams"))
+        #expect(!bundleIds.contains("com.cisco.webex.webex"))
+        #expect(bundleIds == [
+            "us.zoom.xos",
+            "com.microsoft.teams2",
+            "com.tencent.meeting",
+            "com.electron.lark.iron",
+            "com.tencent.xinWeChat"
+        ])
+    }
+
+    @Test("New Teams includes ModuleHost audio alias")
+    func testNewTeamsIncludesModuleHostAudioAlias() async throws {
+        let monitor = ApplicationMonitor()
+        let teamsNew = try #require(monitor.monitoredApps.first { $0.bundleIdentifier == "com.microsoft.teams2" })
+
+        #expect(teamsNew.logProcessAliases.contains("Microsoft Teams ModuleHost"))
+    }
+
+    @Test("New Teams uses meeting-title window patterns with main-view exclusions")
+    func testNewTeamsUsesMeetingWindowPatternWithMainViewExclusions() async throws {
+        let monitor = ApplicationMonitor()
+        let teamsNew = try #require(monitor.monitoredApps.first { $0.bundleIdentifier == "com.microsoft.teams2" })
+
+        #expect(teamsNew.meetingWindowPatterns.contains("| Microsoft Teams"))
+        #expect(teamsNew.excludeWindowPatterns.contains("Calendar | Microsoft Teams"))
+        #expect(teamsNew.excludeWindowPatterns.contains("Chat | Microsoft Teams"))
+    }
+
+    @Test("Tencent Meeting uses AX classifier instead of broad title matching")
+    func testTencentMeetingUsesAXClassifierInsteadOfBroadTitle() async throws {
+        let monitor = ApplicationMonitor()
+        let tencent = try #require(monitor.monitoredApps.first { $0.bundleIdentifier == "com.tencent.meeting" })
+
+        #expect(tencent.meetingWindowPatterns.isEmpty)
+        #expect(tencent.logProcessAliases.contains("TencentMeeting"))
+        #expect(tencent.logProcessAliases.contains("腾讯会议"))
+    }
+
+    @Test("Feishu tracks Iron helper audio alias and meeting title")
+    func testFeishuTracksIronHelperAliasAndMeetingTitle() async throws {
+        let monitor = ApplicationMonitor()
+        let feishu = try #require(monitor.monitoredApps.first { $0.bundleIdentifier == "com.electron.lark.iron" })
+
+        #expect(feishu.processName == "Feishu")
+        #expect(feishu.logProcessAliases.contains("Lark Helper (Iron)"))
+        #expect(feishu.meetingWindowPatterns.contains("飞书会议"))
+    }
 
     @Test("enabledApps respects default settings")
     func testEnabledAppsDefaultState() async throws {
@@ -85,9 +129,8 @@ struct ApplicationMonitorTests {
         let enabledApps = filterApps(allApps, settings: settings)
         let expectedCount = expectedEnabledCount(settings: settings)
 
-        // All apps except WeChat should be enabled by default
         #expect(enabledApps.count == expectedCount)
-        #expect(enabledApps.count == 6)  // 7 total - 1 (WeChat disabled)
+        #expect(enabledApps.count == 4)  // 5 active targets - 1 WeChat opt-in target
     }
 
     @Test("WeChat is not in enabledApps by default")
@@ -101,7 +144,7 @@ struct ApplicationMonitorTests {
         #expect(weChatApp == nil)
     }
 
-    @Test("All other apps are in enabledApps by default")
+    @Test("All active non-WeChat apps are in enabledApps by default")
     func testOtherAppsEnabledByDefault() async throws {
         let settings = MockSettingsManager()
         settings.reset()
@@ -109,18 +152,17 @@ struct ApplicationMonitorTests {
         let enabledApps = filterApps(allApps, settings: settings)
         let bundleIds = enabledApps.map { $0.bundleIdentifier }
 
-        // These should all be enabled by default
         #expect(bundleIds.contains("us.zoom.xos"))
-        #expect(bundleIds.contains("com.microsoft.teams"))
         #expect(bundleIds.contains("com.microsoft.teams2"))
-        #expect(bundleIds.contains("com.cisco.webex.webex"))
         #expect(bundleIds.contains("com.tencent.meeting"))
         #expect(bundleIds.contains("com.electron.lark.iron"))
+        #expect(!bundleIds.contains("com.microsoft.teams"))
+        #expect(!bundleIds.contains("com.cisco.webex.webex"))
     }
 
     // MARK: - All Apps Enabled Tests
 
-    @Test("enabledApps returns all apps when all toggles are on")
+    @Test("enabledApps returns all active apps when all toggles are on")
     func testEnabledAppsAllEnabled() async throws {
         let settings = MockSettingsManager()
         settings.reset()
@@ -130,7 +172,7 @@ struct ApplicationMonitorTests {
 
         let enabledApps = filterApps(allApps, settings: settings)
 
-        #expect(enabledApps.count == 7)
+        #expect(enabledApps.count == 5)
     }
 
     @Test("WeChat appears in enabledApps when enabled")
@@ -197,26 +239,6 @@ struct ApplicationMonitorTests {
         #expect(enabledApps.contains(where: { $0.bundleIdentifier == "us.zoom.xos" }))
     }
 
-    @Test("Teams Classic toggle affects enabledApps correctly")
-    func testTeamsClassicToggle() async throws {
-        let settings = MockSettingsManager()
-        settings.reset()
-
-        // Initially enabled
-        var enabledApps = filterApps(allApps, settings: settings)
-        #expect(enabledApps.contains(where: { $0.bundleIdentifier == "com.microsoft.teams" }))
-
-        // Disable Teams Classic
-        settings.detectTeamsClassic = false
-        enabledApps = filterApps(allApps, settings: settings)
-        #expect(!enabledApps.contains(where: { $0.bundleIdentifier == "com.microsoft.teams" }))
-
-        // Re-enable Teams Classic
-        settings.detectTeamsClassic = true
-        enabledApps = filterApps(allApps, settings: settings)
-        #expect(enabledApps.contains(where: { $0.bundleIdentifier == "com.microsoft.teams" }))
-    }
-
     @Test("Teams New toggle affects enabledApps correctly")
     func testTeamsNewToggle() async throws {
         let settings = MockSettingsManager()
@@ -237,24 +259,19 @@ struct ApplicationMonitorTests {
         #expect(enabledApps.contains(where: { $0.bundleIdentifier == "com.microsoft.teams2" }))
     }
 
-    @Test("Webex toggle affects enabledApps correctly")
-    func testWebexToggle() async throws {
+    @Test("legacy Teams Classic and Webex settings do not add active monitored apps")
+    func testLegacySettingsDoNotAddRemovedApps() async throws {
         let settings = MockSettingsManager()
         settings.reset()
 
-        // Initially enabled
-        var enabledApps = filterApps(allApps, settings: settings)
-        #expect(enabledApps.contains(where: { $0.bundleIdentifier == "com.cisco.webex.webex" }))
-
-        // Disable Webex
-        settings.detectWebex = false
-        enabledApps = filterApps(allApps, settings: settings)
-        #expect(!enabledApps.contains(where: { $0.bundleIdentifier == "com.cisco.webex.webex" }))
-
-        // Re-enable Webex
+        settings.detectTeamsClassic = true
         settings.detectWebex = true
-        enabledApps = filterApps(allApps, settings: settings)
-        #expect(enabledApps.contains(where: { $0.bundleIdentifier == "com.cisco.webex.webex" }))
+
+        let enabledApps = filterApps(allApps, settings: settings)
+        let bundleIds = enabledApps.map { $0.bundleIdentifier }
+
+        #expect(!bundleIds.contains("com.microsoft.teams"))
+        #expect(!bundleIds.contains("com.cisco.webex.webex"))
     }
 
     @Test("Tencent Meeting toggle affects enabledApps correctly")
@@ -319,19 +336,18 @@ struct ApplicationMonitorTests {
 
     // MARK: - Mixed Configuration Tests
 
-    @Test("enabledApps works with mixed app settings")
+    @Test("enabledApps works with mixed active app settings")
     func testEnabledAppsMixedConfiguration() async throws {
         let settings = MockSettingsManager()
         settings.reset()
 
-        // Enable only specific apps
         settings.detectZoom = true
-        settings.detectTeamsClassic = false
         settings.detectTeamsNew = false
-        settings.detectWebex = false
         settings.detectTencentMeeting = true
         settings.detectFeishu = false
         settings.detectWeChat = false
+        settings.detectTeamsClassic = true
+        settings.detectWebex = true
 
         let enabledApps = filterApps(allApps, settings: settings)
         let bundleIds = enabledApps.map { $0.bundleIdentifier }
@@ -339,6 +355,8 @@ struct ApplicationMonitorTests {
         #expect(enabledApps.count == 2)
         #expect(bundleIds.contains("us.zoom.xos"))
         #expect(bundleIds.contains("com.tencent.meeting"))
+        #expect(!bundleIds.contains("com.microsoft.teams"))
+        #expect(!bundleIds.contains("com.cisco.webex.webex"))
     }
 
     @Test("enabledApps filters correctly for any combination")
@@ -349,7 +367,7 @@ struct ApplicationMonitorTests {
         // Test various combinations
         let testCases: [(Set<String>, Int)] = [
             (["us.zoom.xos"], 1),
-            (["us.zoom.xos", "com.microsoft.teams"], 2),
+            (["us.zoom.xos", "com.microsoft.teams2"], 2),
             (["us.zoom.xos", "com.tencent.meeting", "com.electron.lark.iron"], 3),
             (["com.tencent.xinWeChat"], 1),  // WeChat only
         ]
@@ -363,12 +381,8 @@ struct ApplicationMonitorTests {
                 switch bundleId {
                 case "us.zoom.xos":
                     settings.detectZoom = true
-                case "com.microsoft.teams":
-                    settings.detectTeamsClassic = true
                 case "com.microsoft.teams2":
                     settings.detectTeamsNew = true
-                case "com.cisco.webex.webex":
-                    settings.detectWebex = true
                 case "com.tencent.meeting":
                     settings.detectTencentMeeting = true
                 case "com.electron.lark.iron":
@@ -385,14 +399,13 @@ struct ApplicationMonitorTests {
         }
     }
 
-    // MARK: - Western vs Chinese Apps Tests
+    // MARK: - Regional App Group Tests
 
-    @Test("Western apps can be enabled independently")
-    func testWesternAppsIndependent() async throws {
+    @Test("Zoom and Teams New can be enabled independently")
+    func testZoomAndTeamsNewIndependent() async throws {
         let settings = MockSettingsManager()
         settings.reset()
 
-        // Enable only Western apps
         settings.detectZoom = true
         settings.detectTeamsClassic = true
         settings.detectTeamsNew = true
@@ -404,11 +417,11 @@ struct ApplicationMonitorTests {
         let enabledApps = filterApps(allApps, settings: settings)
         let bundleIds = enabledApps.map { $0.bundleIdentifier }
 
-        #expect(enabledApps.count == 4)
+        #expect(enabledApps.count == 2)
         #expect(bundleIds.contains("us.zoom.xos"))
-        #expect(bundleIds.contains("com.microsoft.teams"))
         #expect(bundleIds.contains("com.microsoft.teams2"))
-        #expect(bundleIds.contains("com.cisco.webex.webex"))
+        #expect(!bundleIds.contains("com.microsoft.teams"))
+        #expect(!bundleIds.contains("com.cisco.webex.webex"))
         #expect(!bundleIds.contains("com.tencent.meeting"))
         #expect(!bundleIds.contains("com.electron.lark.iron"))
         #expect(!bundleIds.contains("com.tencent.xinWeChat"))
@@ -441,41 +454,29 @@ struct ApplicationMonitorTests {
         #expect(bundleIds.contains("com.tencent.xinWeChat"))
     }
 
-    // MARK: - Teams (Both Versions) Tests
+    // MARK: - Teams New Tests
 
-    @Test("Both Teams versions can be enabled independently")
-    func testTeamsVersionsIndependent() async throws {
+    @Test("Teams Classic setting does not enable removed Classic target")
+    func testTeamsClassicSettingDoesNotEnableRemovedTarget() async throws {
         let settings = MockSettingsManager()
         settings.reset()
 
-        // Enable only Teams Classic
+        settings.disableAllAppDetection()
         settings.detectTeamsClassic = true
         settings.detectTeamsNew = false
 
         var enabledApps = filterApps(allApps, settings: settings)
         var bundleIds = enabledApps.map { $0.bundleIdentifier }
 
-        #expect(bundleIds.contains("com.microsoft.teams"))
+        #expect(!bundleIds.contains("com.microsoft.teams"))
         #expect(!bundleIds.contains("com.microsoft.teams2"))
 
-        // Switch to Teams New only
-        settings.detectTeamsClassic = false
         settings.detectTeamsNew = true
 
         enabledApps = filterApps(allApps, settings: settings)
         bundleIds = enabledApps.map { $0.bundleIdentifier }
 
         #expect(!bundleIds.contains("com.microsoft.teams"))
-        #expect(bundleIds.contains("com.microsoft.teams2"))
-
-        // Enable both
-        settings.detectTeamsClassic = true
-        settings.detectTeamsNew = true
-
-        enabledApps = filterApps(allApps, settings: settings)
-        bundleIds = enabledApps.map { $0.bundleIdentifier }
-
-        #expect(bundleIds.contains("com.microsoft.teams"))
         #expect(bundleIds.contains("com.microsoft.teams2"))
     }
 
@@ -496,22 +497,23 @@ struct ApplicationMonitorTests {
         #expect(enabledApps.first?.bundleIdentifier == "us.zoom.xos")
     }
 
-    @Test("User who uses Microsoft products only")
-    func testScenarioMicrosoftOnly() async throws {
+    @Test("User who uses Microsoft Teams New only")
+    func testScenarioMicrosoftTeamsNewOnly() async throws {
         let settings = MockSettingsManager()
         settings.reset()
 
-        // User wants both Teams versions
         settings.disableAllAppDetection()
         settings.detectTeamsClassic = true
         settings.detectTeamsNew = true
+        settings.detectWebex = true
 
         let enabledApps = filterApps(allApps, settings: settings)
         let bundleIds = enabledApps.map { $0.bundleIdentifier }
 
-        #expect(enabledApps.count == 2)
-        #expect(bundleIds.contains("com.microsoft.teams"))
+        #expect(enabledApps.count == 1)
         #expect(bundleIds.contains("com.microsoft.teams2"))
+        #expect(!bundleIds.contains("com.microsoft.teams"))
+        #expect(!bundleIds.contains("com.cisco.webex.webex"))
     }
 
     @Test("User who uses Chinese apps only")
@@ -543,7 +545,7 @@ struct ApplicationMonitorTests {
 
         let enabledApps = filterApps(allApps, settings: settings)
 
-        #expect(enabledApps.count == 7)
+        #expect(enabledApps.count == 5)
     }
 
     @Test("User who disabled detection entirely")
@@ -574,9 +576,7 @@ struct ApplicationMonitorTests {
         let bundleIds = allApps.map { $0.bundleIdentifier }
         let expectedIds = Set([
             "us.zoom.xos",
-            "com.microsoft.teams",
             "com.microsoft.teams2",
-            "com.cisco.webex.webex",
             "com.tencent.meeting",
             "com.electron.lark.iron",
             "com.tencent.xinWeChat"

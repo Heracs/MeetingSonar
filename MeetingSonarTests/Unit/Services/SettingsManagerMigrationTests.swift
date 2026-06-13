@@ -39,7 +39,7 @@ struct SettingsManagerMigrationTests {
 
     // MARK: - F-0.10.2: Teams Detection Migration Tests
 
-    @Test("Migration: classic=true, new=false -> both become true (OR logic)")
+    @Test("Migration: classic=true, new=false -> Teams New becomes true")
     func testMigrationClassicTrueNewFalse() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
@@ -57,8 +57,8 @@ struct SettingsManagerMigrationTests {
             // Run migration
             settings.migrateTeamsDetection()
 
-            // Verify both are now true (OR logic)
-            #expect(UserDefaults.standard.bool(forKey: classicKey) == true)
+            // Classic-only legacy users should keep Teams support through Teams New.
+            #expect(UserDefaults.standard.bool(forKey: classicKey) == false)
             #expect(UserDefaults.standard.bool(forKey: newKey) == true)
 
             // Restore originals
@@ -67,7 +67,7 @@ struct SettingsManagerMigrationTests {
         }
     }
 
-    @Test("Migration: classic=false, new=true -> both become true (OR logic)")
+    @Test("Migration: classic=false, new=true -> Teams New remains true")
     func testMigrationClassicFalseNewTrue() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
@@ -85,8 +85,8 @@ struct SettingsManagerMigrationTests {
             // Run migration
             settings.migrateTeamsDetection()
 
-            // Verify both are now true (OR logic)
-            #expect(UserDefaults.standard.bool(forKey: classicKey) == true)
+            // Classic stays disabled; Teams New remains active.
+            #expect(UserDefaults.standard.bool(forKey: classicKey) == false)
             #expect(UserDefaults.standard.bool(forKey: newKey) == true)
 
             // Restore originals
@@ -95,7 +95,7 @@ struct SettingsManagerMigrationTests {
         }
     }
 
-    @Test("Migration: both false -> both remain false")
+    @Test("Migration: both false -> Teams New remains false")
     func testMigrationBothFalse() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
@@ -113,7 +113,7 @@ struct SettingsManagerMigrationTests {
             // Run migration
             settings.migrateTeamsDetection()
 
-            // Verify both remain false
+            // Verify active Teams New remains false.
             #expect(UserDefaults.standard.bool(forKey: classicKey) == false)
             #expect(UserDefaults.standard.bool(forKey: newKey) == false)
 
@@ -123,7 +123,7 @@ struct SettingsManagerMigrationTests {
         }
     }
 
-    @Test("Migration: both true -> both remain true")
+    @Test("Migration: both true -> Teams New remains true")
     func testMigrationBothTrue() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
@@ -141,8 +141,8 @@ struct SettingsManagerMigrationTests {
             // Run migration
             settings.migrateTeamsDetection()
 
-            // Verify both remain true
-            #expect(UserDefaults.standard.bool(forKey: classicKey) == true)
+            // Classic is retired; Teams New remains active.
+            #expect(UserDefaults.standard.bool(forKey: classicKey) == false)
             #expect(UserDefaults.standard.bool(forKey: newKey) == true)
 
             // Restore originals
@@ -171,8 +171,8 @@ struct SettingsManagerMigrationTests {
             settings.migrateTeamsDetection()
             settings.migrateTeamsDetection()
 
-            // Verify result is consistent (both true)
-            #expect(UserDefaults.standard.bool(forKey: classicKey) == true)
+            // Verify result is consistent.
+            #expect(UserDefaults.standard.bool(forKey: classicKey) == false)
             #expect(UserDefaults.standard.bool(forKey: newKey) == true)
 
             // Restore originals

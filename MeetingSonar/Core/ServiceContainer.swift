@@ -306,7 +306,7 @@ protocol AIProcessingCoordinatorProtocol: AnyObject, ObservableObject {
     var lastError: Error? { get }
 
     // MARK: - Main Processing Pipeline
-    func process(audioURL: URL, meetingID: UUID) async
+    func process(audioURL: URL, meetingID: UUID) async throws -> AIProcessingResult
     func processASROnly(audioURL: URL, meetingID: UUID) async -> (text: String?, transcriptURL: URL?)
     func processASROnlyWithVersion(audioURL: URL, meetingID: UUID) async -> (
         text: String?,

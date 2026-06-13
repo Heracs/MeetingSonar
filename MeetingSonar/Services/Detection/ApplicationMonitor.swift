@@ -22,7 +22,7 @@ class ApplicationMonitor: ObservableObject {
         case inMeeting(pid: pid_t) // 进程运行 + 检测到会议窗口
     }
     
-    struct MonitoredApp {
+    struct MonitoredApp: Equatable {
         let bundleIdentifier: String
         let processName: String
         let logProcessAliases: [String] // Additional names to look for in logs (e.g. "aomhost")
@@ -39,11 +39,29 @@ class ApplicationMonitor: ObservableObject {
         var windowPollCount: Int = 0
     }
 
+    static func resolvedProcessRefreshState(existing: MeetingState?, runningPID: pid_t) -> MeetingState {
+        guard let existing else {
+            return .running(pid: runningPID)
+        }
+
+        switch existing {
+        case .notRunning:
+            return .running(pid: runningPID)
+        case .running:
+            return .running(pid: runningPID)
+        case .inMeeting(let pid):
+            return pid == runningPID ? .inMeeting(pid: runningPID) : .running(pid: runningPID)
+        }
+    }
+
     /// Per-app states keyed by bundleIdentifier
     @Published private(set) var appStates: [String: PerAppState] = [:]
 
     /// BundleIDs of apps currently in .inMeeting state (for DetectionService)
     @Published private(set) var activeMeetingApps: Set<String> = []
+
+    /// Latest participant-count observations keyed by bundleIdentifier.
+    @Published private(set) var participantObservations: [String: ParticipantCountObservation] = [:]
     
     let monitoredApps: [MonitoredApp] = [
         // MARK: - Existing Apps
@@ -55,33 +73,29 @@ class ApplicationMonitor: ObservableObject {
             excludeWindowPatterns: []
         ),
         MonitoredApp(
-            bundleIdentifier: "com.microsoft.teams",
-            processName: "Microsoft Teams",
-            logProcessAliases: ["Microsoft Teams"],
-            meetingWindowPatterns: ["| Microsoft Teams", "Meeting"],
-            excludeWindowPatterns: []
-        ),
-        MonitoredApp(
             bundleIdentifier: "com.microsoft.teams2", // New Teams (Work/School)
             processName: "MSTeams",
-            logProcessAliases: ["MSTeams", "Microsoft Teams WebView Helper"],
-            meetingWindowPatterns: [], // Reliant on Mic Detection (LogMonitor) due to "No Title" issue
-            excludeWindowPatterns: []
-        ),
-        MonitoredApp(
-            bundleIdentifier: "com.cisco.webex.webex",
-            processName: "Webex",
-            logProcessAliases: ["Webex"],
-            meetingWindowPatterns: ["Webex Meeting"],
-            excludeWindowPatterns: []
+            logProcessAliases: ["MSTeams", "Microsoft Teams ModuleHost", "Microsoft Teams WebView Helper"],
+            meetingWindowPatterns: ["| Microsoft Teams"],
+            excludeWindowPatterns: [
+                "Activity | Microsoft Teams",
+                "Apps | Microsoft Teams",
+                "Calendar | Microsoft Teams",
+                "Calls | Microsoft Teams",
+                "Chat | Microsoft Teams",
+                "Files | Microsoft Teams",
+                "Meet | Microsoft Teams",
+                "OneDrive | Microsoft Teams",
+                "Teams | Microsoft Teams"
+            ]
         ),
 
         // MARK: - New Apps (Phase 1: Tencent Meeting)
         MonitoredApp(
             bundleIdentifier: "com.tencent.meeting",
             processName: "TencentMeeting",
-            logProcessAliases: ["TencentMeeting", "wemeet", "com.tencent.meeting"],
-            meetingWindowPatterns: ["腾讯会议", "Tencent Meeting"],
+            logProcessAliases: ["TencentMeeting", "腾讯会议", "wemeet", "com.tencent.meeting"],
+            meetingWindowPatterns: [],
             excludeWindowPatterns: []
         ),
 
@@ -89,8 +103,8 @@ class ApplicationMonitor: ObservableObject {
         MonitoredApp(
             bundleIdentifier: "com.electron.lark.iron",
             processName: "Feishu",
-            logProcessAliases: ["Feishu", "Lark", "Lark Helper", "com.electron.lark.iron"],
-            meetingWindowPatterns: ["视频会议", "语音通话", "会议中", "Video Meeting", "Voice Call", "Meeting"],
+            logProcessAliases: ["Feishu", "Lark", "Lark Helper", "Lark Helper (Iron)", "com.electron.lark.iron"],
+            meetingWindowPatterns: ["飞书会议", "视频会议", "语音通话", "会议中", "Feishu Meeting", "Lark Meeting", "Video Meeting", "Voice Call"],
             excludeWindowPatterns: []
         ),
 
@@ -113,12 +127,8 @@ class ApplicationMonitor: ObservableObject {
             // Western Apps
             case "us.zoom.xos":
                 return settings.detectZoom
-            case "com.microsoft.teams":
-                return settings.detectTeamsClassic
             case "com.microsoft.teams2":
                 return settings.detectTeamsNew
-            case "com.cisco.webex.webex":
-                return settings.detectWebex
             // Chinese Apps
             case "com.tencent.meeting":
                 return settings.detectTencentMeeting
@@ -127,12 +137,13 @@ class ApplicationMonitor: ObservableObject {
             case "com.tencent.xinWeChat":
                 return settings.detectWeChat
             default:
-                return true
+                return false
             }
         }
     }
 
     private var workspaceObservation: AnyCancellable?
+    private var processRefreshTimer: Timer?
     private var windowCheckTimer: Timer?
     private let logger = LoggerService.shared
     private var cancellables = Set<AnyCancellable>()
@@ -152,6 +163,7 @@ class ApplicationMonitor: ObservableObject {
     deinit {
         // Timer will be invalidated automatically when the object is deallocated
         // Note: Cannot call stopMonitoring() here due to @MainActor isolation
+        processRefreshTimer?.invalidate()
         windowCheckTimer?.invalidate()
     }
     
@@ -162,8 +174,10 @@ class ApplicationMonitor: ObservableObject {
         
         // 1. Check initial state
         checkForRunningApps()
+        startProcessRefreshTimer()
         
         // 2. Observe Launch/Terminate
+        guard workspaceObservation == nil else { return }
         let center = NSWorkspace.shared.notificationCenter
         
         workspaceObservation = center.publisher(for: NSWorkspace.didLaunchApplicationNotification)
@@ -179,30 +193,40 @@ class ApplicationMonitor: ObservableObject {
     
     private func stopMonitoring() {
         workspaceObservation?.cancel()
+        workspaceObservation = nil
+        stopProcessRefreshTimer()
         stopWindowPolling()
     }
+
+    private func startProcessRefreshTimer() {
+        guard processRefreshTimer == nil else { return }
+        processRefreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkForRunningApps(logSummary: false)
+            }
+        }
+    }
+
+    private func stopProcessRefreshTimer() {
+        processRefreshTimer?.invalidate()
+        processRefreshTimer = nil
+    }
     
-    private func checkForRunningApps() {
+    private func checkForRunningApps(logSummary: Bool = true) {
         let enabled = enabledApps
         let runningApps = NSWorkspace.shared.runningApplications
 
+        let previousStates = appStates.mapValues(\.meetingState)
         var newAppStates: [String: PerAppState] = [:]
         var hasRunning = false
 
         for app in enabled {
             if let running = runningApps.first(where: { $0.bundleIdentifier == app.bundleIdentifier }) {
                 let existingState = appStates[app.bundleIdentifier]
-                let meetingState: MeetingState
-                if let existing = existingState {
-                    switch existing.meetingState {
-                    case .notRunning:
-                        meetingState = .running(pid: running.processIdentifier)
-                    case .running, .inMeeting:
-                        meetingState = .running(pid: running.processIdentifier)
-                    }
-                } else {
-                    meetingState = .running(pid: running.processIdentifier)
-                }
+                let meetingState = ApplicationMonitor.resolvedProcessRefreshState(
+                    existing: existingState?.meetingState,
+                    runningPID: running.processIdentifier
+                )
                 newAppStates[app.bundleIdentifier] = PerAppState(
                     config: app,
                     meetingState: meetingState,
@@ -230,11 +254,14 @@ class ApplicationMonitor: ObservableObject {
             stopWindowPolling()
         }
 
-        logger.log(category: .detection, level: .debug, message: """
-            [ApplicationMonitor] checkForRunningApps: \(enabled.count) enabled, \
-            \(appStates.filter { if case .running = $0.value.meetingState { true } else { false } }.count) running, \
-            \(activeMeetingApps.count) in-meeting
-            """)
+        let stateChanged = previousStates != appStates.mapValues(\.meetingState)
+        if logSummary || stateChanged {
+            logger.log(category: .detection, level: .debug, message: """
+                [ApplicationMonitor] checkForRunningApps: \(enabled.count) enabled, \
+                \(appStates.filter { if case .running = $0.value.meetingState { true } else { false } }.count) running, \
+                \(activeMeetingApps.count) in-meeting
+                """)
+        }
     }
 
     func reloadEnabledApps() {
@@ -258,6 +285,45 @@ class ApplicationMonitor: ObservableObject {
         )
     }
 
+    func snapshot(
+        for bundleID: String,
+        micState: MicSignalState,
+        participantCount: ParticipantCountObservation? = nil,
+        now: Date = Date()
+    ) -> AppSignalSnapshot? {
+        guard let state = appStates[bundleID] else { return nil }
+
+        let isRunning: Bool
+        let processID: pid_t?
+        let windowState: WindowSignalState
+
+        switch state.meetingState {
+        case .notRunning:
+            isRunning = false
+            processID = nil
+            windowState = .none
+        case .running(let pid):
+            isRunning = true
+            processID = pid
+            windowState = .mainWindow
+        case .inMeeting(let pid):
+            isRunning = true
+            processID = pid
+            windowState = .meetingUI
+        }
+
+        return AppSignalSnapshot(
+            app: state.config,
+            isRunning: isRunning,
+            processID: processID,
+            windowState: windowState,
+            micState: micState,
+            participantCount: participantCount ?? participantObservations[bundleID],
+            lastProcessEvent: nil,
+            timestamp: now
+        )
+    }
+
     // MARK: - Window Monitoring (Level 2)
     
     private func startWindowPolling() {
@@ -271,6 +337,7 @@ class ApplicationMonitor: ObservableObject {
     }
     
     private func stopWindowPolling() {
+        guard windowCheckTimer != nil else { return }
         windowCheckTimer?.invalidate()
         windowCheckTimer = nil
         logger.log(category: .detection, level: .debug, message: "[ApplicationMonitor] Window polling stopped")
@@ -287,7 +354,9 @@ class ApplicationMonitor: ObservableObject {
             }
             let config = state.config
 
-            guard !config.meetingWindowPatterns.isEmpty else { continue }
+            guard !config.meetingWindowPatterns.isEmpty || config.bundleIdentifier == "com.tencent.meeting" else {
+                continue
+            }
 
             logger.log(category: .detection, level: .debug, message: "[ApplicationMonitor] AX poll: checking windows for \(config.processName) (pid: \(pid))")
 
@@ -302,32 +371,76 @@ class ApplicationMonitor: ObservableObject {
                 continue
             }
 
-            let detected = windows.contains { window in
-                var titleRef: CFTypeRef?
-                let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
-                guard titleResult == .success, let title = titleRef as? String else { return false }
+            let windowSnapshots = windows.map { windowContentSnapshot(from: $0) }
+            let windowState = MeetingWindowClassifier.windowState(for: config, windows: windowSnapshots)
+            let detected = windowState == .meetingUI
 
-                let matchedPattern = config.meetingWindowPatterns.first { title.localizedCaseInsensitiveContains($0) }
-                guard let matched = matchedPattern else {
-                    logger.log(category: .detection, level: .debug, message: "[Signal.AX] '\(title)' did not match any pattern for \(config.processName)")
-                    return false
+            if detected {
+                let axTexts = windowSnapshots.flatMap { [$0.title] + $0.strings }
+                let participant = ParticipantCountExtractor.extract(bundleIdentifier: bundleID, texts: axTexts)
+                participantObservations[bundleID] = participant
+                if let count = participant.count {
+                    logger.log(
+                        category: .detection,
+                        level: .info,
+                        message: "[ParticipantCount] \(config.processName): count=\(count), confidence=\(participant.confidence.rawValue), raw=\(participant.rawText ?? "")"
+                    )
                 }
-
-                if let excludedBy = config.excludeWindowPatterns.first(where: { title.localizedCaseInsensitiveContains($0) }) {
-                    logger.log(category: .detection, level: .debug, message: "[Signal.AX] '\(title)' matched '\(matched)' BUT excluded by '\(excludedBy)'")
-                    return false
-                }
-
-                logger.log(category: .detection, level: .debug, message: "[Signal.AX] '\(title)' matched pattern '\(matched)'")
-                return true
-            }
-
-            if !detected {
-                logger.log(category: .detection, level: .debug, message: "[Signal.AX] no matching window for \(config.processName)")
+                logger.log(category: .detection, level: .debug, message: "[Signal.AX] \(config.processName): classified windowState=meetingUI")
+            } else {
+                participantObservations.removeValue(forKey: bundleID)
+                logger.log(category: .detection, level: .debug, message: "[Signal.AX] \(config.processName): classified windowState=\(windowState)")
             }
 
             updateAppMeetingState(bundleID: bundleID, detected: detected, pid: pid)
         }
+    }
+
+    private func windowContentSnapshot(from window: AXUIElement) -> AXWindowContentSnapshot {
+        let title = stringAttribute(window, kAXTitleAttribute as CFString) ?? ""
+        return AXWindowContentSnapshot(
+            title: title,
+            strings: collectAXStrings(from: window)
+        )
+    }
+
+    private func collectAXStrings(from element: AXUIElement, limit: Int = 200) -> [String] {
+        var results: [String] = []
+        var visited = 0
+
+        func visit(_ element: AXUIElement) {
+            guard visited < limit else { return }
+            visited += 1
+
+            for attribute in [
+                kAXTitleAttribute as CFString,
+                kAXValueAttribute as CFString,
+                kAXDescriptionAttribute as CFString,
+                "AXHelp" as CFString,
+                "AXIdentifier" as CFString
+            ] {
+                if let value = stringAttribute(element, attribute), !value.isEmpty {
+                    results.append(value)
+                }
+            }
+
+            var childrenRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+               let children = childrenRef as? [AXUIElement] {
+                children.forEach { visit($0) }
+            }
+        }
+
+        visit(element)
+        return results
+    }
+
+    private func stringAttribute(_ element: AXUIElement, _ attribute: CFString) -> String? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &valueRef) == .success else {
+            return nil
+        }
+        return valueRef as? String
     }
     
     private func updateAppMeetingState(bundleID: String, detected: Bool, pid: pid_t) {
@@ -341,6 +454,7 @@ class ApplicationMonitor: ObservableObject {
 
         case (.inMeeting, false):
             state.meetingState = .running(pid: pid)
+            participantObservations.removeValue(forKey: bundleID)
             logger.log(category: .detection, level: .info, message: "[ApplicationMonitor] \(state.config.processName): meeting window disappeared")
 
         default:

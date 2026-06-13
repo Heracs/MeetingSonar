@@ -75,6 +75,7 @@ final class StreamingSummaryViewModel: ObservableObject {
         streamingTask = Task {
             state = .connecting
             streamingText = ""
+            let startTime = Date()
 
             do {
                 // Build messages
@@ -99,8 +100,6 @@ final class StreamingSummaryViewModel: ObservableObject {
                 └─ Transcript Length: \(transcript.count) chars
                 """)
 
-                state = .streaming(progress: 0.0)
-
                 // Start streaming
                 let stream = try await provider.generateChatCompletionStream(
                     messages: messages,
@@ -108,6 +107,8 @@ final class StreamingSummaryViewModel: ObservableObject {
                     temperature: settings?.temperature,
                     maxTokens: settings?.maxTokens
                 )
+
+                state = .streaming(progress: 0.0)
 
                 var tokenCount = 0
                 for await chunk in stream {
@@ -124,7 +125,11 @@ final class StreamingSummaryViewModel: ObservableObject {
                 state = .completed(text: streamingText)
 
                 // Save to file
-                await saveSummary(text: streamingText, meetingID: meetingID, config: config)
+                await saveSummary(
+                    text: streamingText,
+                    meetingID: meetingID,
+                    processingTime: Date().timeIntervalSince(startTime)
+                )
 
             } catch is CancellationError {
                 state = .cancelled
@@ -134,6 +139,53 @@ final class StreamingSummaryViewModel: ObservableObject {
                 errorMessage = error.localizedDescription
                 logger.error("Streaming failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Start summary generation through the provider runtime abstraction.
+    /// The current runtime protocol is request/response, so this preserves the view model state contract
+    /// while keeping the legacy streaming entry point available for cloud providers that support token streams.
+    func startStreaming(
+        transcript: String,
+        prompt: String,
+        config: AIProviderConfig,
+        runtime: any LLMRuntime,
+        meetingID: UUID,
+        sourceTranscriptId: UUID
+    ) async {
+        guard state == .idle || state.isTerminal else { return }
+
+        state = .connecting
+        streamingText = ""
+        errorMessage = ""
+        let startTime = Date()
+
+        do {
+            let result = try await runtime.generateSummary(
+                messages: buildRuntimeMessages(transcript: transcript, prompt: prompt),
+                context: LLMRuntimeContext(
+                    meetingID: meetingID,
+                    temperature: config.llm?.temperature ?? 0.7,
+                    maxTokens: config.llm?.maxTokens ?? 4096
+                )
+            )
+
+            streamingText = result.content
+            state = .completed(text: result.content)
+
+            await saveSummary(
+                text: result.content,
+                meetingID: meetingID,
+                sourceTranscriptId: sourceTranscriptId,
+                processingTime: Date().timeIntervalSince(startTime)
+            )
+        } catch is CancellationError {
+            state = .cancelled
+            logger.info("Streaming cancelled by user")
+        } catch {
+            state = .failed(error: error.localizedDescription)
+            errorMessage = error.localizedDescription
+            logger.error("Streaming failed: \(error.localizedDescription)")
         }
     }
 
@@ -171,10 +223,21 @@ final class StreamingSummaryViewModel: ObservableObject {
         ]
     }
 
+    private func buildRuntimeMessages(transcript: String, prompt: String) -> [LLMMessage] {
+        let systemPrompt = prompt.isEmpty
+            ? "你是一个专业的会议纪要助手。请将以下会议转录文本整理成结构化的会议纪要。"
+            : prompt
+
+        return [
+            LLMMessage(role: ChatMessage.MessageRole.system.rawValue, content: systemPrompt),
+            LLMMessage(role: ChatMessage.MessageRole.user.rawValue, content: "请为以下会议生成纪要：\n\n\(transcript)")
+        ]
+    }
+
     private func saveSummary(
         text: String,
         meetingID: UUID,
-        config: CloudAIModelConfig
+        processingTime: TimeInterval
     ) async {
         do {
             // Get the meeting to find transcript version info
@@ -183,59 +246,51 @@ final class StreamingSummaryViewModel: ObservableObject {
                 return
             }
 
-            // Generate summary file path
-            let summaryId = UUID()
-            let fileName = "\(summaryId.uuidString)_summary.md"
-            let relativePath = "SmartNotes/\(fileName)"
-
-            let fullPath = PathManager.shared.rootDataURL.appendingPathComponent(relativePath)
-
-            // Ensure directory exists
-            let dir = fullPath.deletingLastPathComponent()
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-            // Write file
-            try text.write(to: fullPath, atomically: true, encoding: .utf8)
-
-            // Determine version number
-            let versionNumber = meeting.summaryVersions.count + 1
-
             // Get source transcript info (latest transcript version)
-            let sourceTranscript = meeting.transcriptVersions.last
+            guard let sourceTranscript = meeting.transcriptVersions.last else {
+                logger.error("Cannot save summary without a source transcript: \(meetingID)")
+                return
+            }
 
-            // Create model info
-            let modelInfo = ModelVersionInfo(
-                modelId: config.id.uuidString,
-                displayName: config.llmConfig?.modelName ?? config.provider.defaultLLMModel,
-                provider: config.provider.displayName,
-                configuration: [
-                    "temperature": String(config.llmConfig?.temperature ?? 0.7),
-                    "maxTokens": String(config.llmConfig?.maxTokens ?? 4096)
-                ]
+            let audioURL = PathManager.shared.recordingsURL.appendingPathComponent(meeting.filename)
+            let version = try await VersionManager.shared.createSummaryVersion(
+                meetingId: meetingID,
+                summaryText: text,
+                audioURL: audioURL,
+                sourceTranscriptId: sourceTranscript.id,
+                processingTime: processingTime
             )
 
-            // Create prompt info
-            let promptInfo = PromptVersionInfo(
-                promptId: "streaming_summary",
-                promptName: "Streaming Summary",
-                contentPreview: "会议纪要点提取...",
-                category: .llm
+            let fullPath = PathManager.shared.rootDataURL.appendingPathComponent(version.filePath)
+            logger.info("Summary saved: \(fullPath.path)")
+
+        } catch {
+            logger.error("Failed to save summary: \(error.localizedDescription)")
+        }
+    }
+
+    private func saveSummary(
+        text: String,
+        meetingID: UUID,
+        sourceTranscriptId: UUID,
+        processingTime: TimeInterval
+    ) async {
+        do {
+            guard let meeting = MetadataManager.shared.get(id: meetingID) else {
+                logger.error("Meeting not found: \(meetingID)")
+                return
+            }
+
+            let audioURL = PathManager.shared.recordingsURL.appendingPathComponent(meeting.filename)
+            let version = try await VersionManager.shared.createSummaryVersion(
+                meetingId: meetingID,
+                summaryText: text,
+                audioURL: audioURL,
+                sourceTranscriptId: sourceTranscriptId,
+                processingTime: processingTime
             )
 
-            // Create summary version
-            let version = SummaryVersion(
-                id: summaryId,
-                versionNumber: versionNumber,
-                timestamp: Date(),
-                modelInfo: modelInfo,
-                promptInfo: promptInfo,
-                filePath: relativePath,
-                sourceTranscriptId: sourceTranscript?.id ?? meetingID,
-                sourceTranscriptVersionNumber: sourceTranscript?.versionNumber ?? 1
-            )
-
-            // Use MetadataManager's safe method to add summary version
-            await MetadataManager.shared.addSummaryVersion(version, to: meetingID)
+            let fullPath = PathManager.shared.rootDataURL.appendingPathComponent(version.filePath)
             logger.info("Summary saved: \(fullPath.path)")
 
         } catch {

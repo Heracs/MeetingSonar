@@ -187,44 +187,6 @@ final class MetadataManager: ObservableObject, MetadataManagerProtocol {
         }
     }
 
-    /// Update AI processing status and flags asynchronously
-    func updateAIStatus(filename: String, status: MeetingMeta.ProcessingStatus, hasTranscript: Bool, hasSummary: Bool) async {
-        if let index = recordings.firstIndex(where: { $0.filename == filename }) {
-            recordings[index].status = status
-
-            // If legacy flag passed true, ensure at least one version exists (Migration/Fallback)
-            if hasTranscript && recordings[index].transcriptVersions.isEmpty {
-                // Auto-create a version pointer for legacy flow compatibility
-                let v = TranscriptVersion(
-                    id: UUID(),
-                    versionNumber: 1,
-                    timestamp: Date(),
-                    modelInfo: ModelVersionInfo(modelId: "unknown", displayName: "Unknown", provider: "Unknown"),
-                    promptInfo: PromptVersionInfo(promptId: "default", promptName: "Default", contentPreview: "", category: .asr),
-                    filePath: "Transcripts/Raw/\(recordings[index].filename.deletingPathExtension)_transcript.json" // Best guess
-                )
-                recordings[index].transcriptVersions.append(v)
-            }
-
-            if hasSummary && recordings[index].summaryVersions.isEmpty {
-                 let v = SummaryVersion(
-                    id: UUID(),
-                    versionNumber: 1,
-                    timestamp: Date(),
-                    modelInfo: ModelVersionInfo(modelId: "unknown", displayName: "Unknown", provider: "Unknown"),
-                    promptInfo: PromptVersionInfo(promptId: "default", promptName: "Default", contentPreview: "", category: .llm),
-                    filePath: "SmartNotes/\(recordings[index].filename.deletingPathExtension)_summary.md",
-                    sourceTranscriptId: recordings[index].transcriptVersions.first?.id ?? UUID(),
-                    sourceTranscriptVersionNumber: recordings[index].transcriptVersions.first?.versionNumber ?? 1
-                )
-                recordings[index].summaryVersions.append(v)
-            }
-
-            await save()
-            LoggerService.shared.log(category: .general, level: .debug, message: "[MetadataManager] Updated AI status for \(filename): \(status)")
-        }
-    }
-
     /// Update recording metadata when recording ends (Duration + Status) asynchronously
     func updateRecordingEnd(filename: String, duration: TimeInterval, status: MeetingMeta.ProcessingStatus) async {
         if let index = recordings.firstIndex(where: { $0.filename == filename }) {

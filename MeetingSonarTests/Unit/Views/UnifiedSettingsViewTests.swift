@@ -5,7 +5,7 @@
 //  Comprehensive tests for UnifiedSettingsView and related settings functionality.
 //  Tests cover:
 //  - Settings binding and persistence
-//  - App detection toggles (all 7 apps)
+//  - App detection toggles for current active targets
 //  - Transcripts settings
 //  - Reset functionality
 //  - ApplicationMonitor.enabledApps filtering
@@ -22,12 +22,10 @@ struct UnifiedSettingsViewTests {
 
     // MARK: - Test Helper Properties
 
-    /// All 7 app bundle identifiers for testing
+    /// Current active app bundle identifiers for testing
     let allAppBundleIds: [String] = [
         "us.zoom.xos",
-        "com.microsoft.teams",
         "com.microsoft.teams2",
-        "com.cisco.webex.webex",
         "com.tencent.meeting",
         "com.electron.lark.iron",
         "com.tencent.xinWeChat"
@@ -37,9 +35,7 @@ struct UnifiedSettingsViewTests {
     /// WeChat should default to false (privacy), others to true
     let defaultDetectionStates: [String: Bool] = [
         "us.zoom.xos": true,
-        "com.microsoft.teams": true,
         "com.microsoft.teams2": true,
-        "com.cisco.webex.webex": true,
         "com.tencent.meeting": true,
         "com.electron.lark.iron": true,
         "com.tencent.xinWeChat": false  // Privacy default
@@ -63,10 +59,6 @@ struct UnifiedSettingsViewTests {
         mockSettings.audioQuality = .low
         #expect(mockSettings.audioQuality == .low)
 
-        // Change to medium
-        mockSettings.audioQuality = .medium
-        #expect(mockSettings.audioQuality == .medium)
-
         // Change back to high
         mockSettings.audioQuality = .high
         #expect(mockSettings.audioQuality == .high)
@@ -75,7 +67,7 @@ struct UnifiedSettingsViewTests {
     @Test("All audio quality values are valid")
     func testAllAudioQualityValues() async throws {
         let mockSettings = MockSettingsManager()
-        let qualities: [AudioQuality] = [.low, .medium, .high]
+        let qualities: [AudioQuality] = [.low, .high]
 
         for quality in qualities {
             mockSettings.audioQuality = quality
@@ -214,7 +206,7 @@ struct UnifiedSettingsViewTests {
         #expect(mockSettings.smartDetectionMode == .remind)
     }
 
-    // MARK: - App Detection Toggle Tests (All 7 Apps)
+    // MARK: - App Detection Toggle Tests
 
     @Test("Zoom detection defaults to enabled")
     func testZoomDetectionDefault() async throws {
@@ -235,25 +227,6 @@ struct UnifiedSettingsViewTests {
         #expect(mockSettings.detectZoom == true)
     }
 
-    @Test("Teams Classic detection defaults to enabled")
-    func testTeamsClassicDetectionDefault() async throws {
-        let mockSettings = MockSettingsManager()
-        mockSettings.reset()
-
-        #expect(mockSettings.detectTeamsClassic == true)
-    }
-
-    @Test("Teams Classic detection can be toggled")
-    func testTeamsClassicDetectionToggle() async throws {
-        let mockSettings = MockSettingsManager()
-
-        mockSettings.detectTeamsClassic = false
-        #expect(mockSettings.detectTeamsClassic == false)
-
-        mockSettings.detectTeamsClassic = true
-        #expect(mockSettings.detectTeamsClassic == true)
-    }
-
     @Test("Teams New detection defaults to enabled")
     func testTeamsNewDetectionDefault() async throws {
         let mockSettings = MockSettingsManager()
@@ -271,25 +244,6 @@ struct UnifiedSettingsViewTests {
 
         mockSettings.detectTeamsNew = true
         #expect(mockSettings.detectTeamsNew == true)
-    }
-
-    @Test("Webex detection defaults to enabled")
-    func testWebexDetectionDefault() async throws {
-        let mockSettings = MockSettingsManager()
-        mockSettings.reset()
-
-        #expect(mockSettings.detectWebex == true)
-    }
-
-    @Test("Webex detection can be toggled")
-    func testWebexDetectionToggle() async throws {
-        let mockSettings = MockSettingsManager()
-
-        mockSettings.detectWebex = false
-        #expect(mockSettings.detectWebex == false)
-
-        mockSettings.detectWebex = true
-        #expect(mockSettings.detectWebex == true)
     }
 
     @Test("Tencent Meeting detection defaults to enabled")
@@ -363,9 +317,9 @@ struct UnifiedSettingsViewTests {
         // Set all to true
         mockSettings.enableAllAppDetection()
         #expect(mockSettings.detectZoom == true)
-        #expect(mockSettings.detectTeamsClassic == true)
+        #expect(mockSettings.detectTeamsClassic == false)
         #expect(mockSettings.detectTeamsNew == true)
-        #expect(mockSettings.detectWebex == true)
+        #expect(mockSettings.detectWebex == false)
         #expect(mockSettings.detectTencentMeeting == true)
         #expect(mockSettings.detectFeishu == true)
         #expect(mockSettings.detectWeChat == true)
@@ -483,9 +437,9 @@ struct UnifiedSettingsViewTests {
         mockSettings.smartDetectionMode = .remind
         mockSettings.audioQuality = .high
         mockSettings.detectZoom = true
-        mockSettings.detectTeamsClassic = true
+        mockSettings.detectTeamsClassic = false
         mockSettings.detectTeamsNew = true
-        mockSettings.detectWebex = true
+        mockSettings.detectWebex = false
         mockSettings.detectTencentMeeting = true
         mockSettings.detectFeishu = true
         mockSettings.detectWeChat = false  // Privacy: stays false
@@ -495,9 +449,9 @@ struct UnifiedSettingsViewTests {
         #expect(mockSettings.smartDetectionMode == .remind)
         #expect(mockSettings.audioQuality == .high)
         #expect(mockSettings.detectZoom == true)
-        #expect(mockSettings.detectTeamsClassic == true)
+        #expect(mockSettings.detectTeamsClassic == false)
         #expect(mockSettings.detectTeamsNew == true)
-        #expect(mockSettings.detectWebex == true)
+        #expect(mockSettings.detectWebex == false)
         #expect(mockSettings.detectTencentMeeting == true)
         #expect(mockSettings.detectFeishu == true)
         #expect(mockSettings.detectWeChat == false)  // Critical: stays false

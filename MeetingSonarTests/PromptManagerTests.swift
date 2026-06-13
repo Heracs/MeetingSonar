@@ -9,7 +9,7 @@ import Testing
 import Foundation
 @testable import MeetingSonar
 
-@Suite("PromptManager Tests")
+@Suite("PromptManager Tests", .serialized)
 struct PromptManagerTests {
 
     @Test("Create template")

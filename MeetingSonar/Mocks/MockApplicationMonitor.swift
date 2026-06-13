@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+@testable import MeetingSonar
 
 /// Mock application monitor for unit testing
 ///
@@ -51,22 +52,10 @@ final class MockApplicationMonitor: ObservableObject {
                 meetingWindowPatterns: ["Zoom Meeting", "Zoom Webinar"]
             ),
             MonitoredApp(
-                bundleIdentifier: "com.microsoft.teams",
-                processName: "Microsoft Teams",
-                logProcessAliases: ["Microsoft Teams"],
-                meetingWindowPatterns: ["| Microsoft Teams", "Meeting"]
-            ),
-            MonitoredApp(
                 bundleIdentifier: "com.microsoft.teams2",
                 processName: "MSTeams",
-                logProcessAliases: ["MSTeams"],
-                meetingWindowPatterns: []
-            ),
-            MonitoredApp(
-                bundleIdentifier: "com.cisco.webex.webex",
-                processName: "Webex",
-                logProcessAliases: ["Webex"],
-                meetingWindowPatterns: ["Webex Meeting"]
+                logProcessAliases: ["MSTeams", "Microsoft Teams ModuleHost", "Microsoft Teams WebView Helper"],
+                meetingWindowPatterns: ["| Microsoft Teams"]
             ),
             // Phase 1: Tencent Meeting
             MonitoredApp(
@@ -105,12 +94,8 @@ final class MockApplicationMonitor: ObservableObject {
             // Western Apps
             case "us.zoom.xos":
                 return mockSettings.detectZoom
-            case "com.microsoft.teams":
-                return mockSettings.detectTeamsClassic
             case "com.microsoft.teams2":
                 return mockSettings.detectTeamsNew
-            case "com.cisco.webex.webex":
-                return mockSettings.detectWebex
             // Chinese Apps
             case "com.tencent.meeting":
                 return mockSettings.detectTencentMeeting
@@ -119,7 +104,7 @@ final class MockApplicationMonitor: ObservableObject {
             case "com.tencent.xinWeChat":
                 return mockSettings.detectWeChat
             default:
-                return true
+                return false
             }
         }
     }

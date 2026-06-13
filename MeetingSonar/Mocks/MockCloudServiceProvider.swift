@@ -6,6 +6,7 @@
 //
 
 import Foundation
+@testable import MeetingSonar
 
 /// Mock cloud service provider for testing streaming and API interactions
 final class MockCloudServiceProvider: CloudServiceProvider, @unchecked Sendable {

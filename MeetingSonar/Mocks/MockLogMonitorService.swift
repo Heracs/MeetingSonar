@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+@testable import MeetingSonar
 
 /// Mock log monitor service for unit testing
 ///

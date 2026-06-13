@@ -295,6 +295,24 @@ struct ASRServiceTests {
 
     // MARK: - State Management Tests
 
+    @Test("ASRService reloads runtime when selected provider revision changes")
+    func testRuntimeCacheInvalidatesByRevision() async throws {
+        let service = ASRService.shared
+        service.reset()
+
+        var config = AIProviderConfig.localWhisperCpp(
+            displayName: "Local Whisper",
+            executablePath: "/tmp/whisper-cli",
+            modelPath: "/tmp/model.bin"
+        )
+        let firstKey = ASRService.RuntimeCacheKey(configID: config.id, revision: config.revision)
+
+        config.touch()
+        let secondKey = ASRService.RuntimeCacheKey(configID: config.id, revision: config.revision)
+
+        #expect(firstKey != secondKey)
+    }
+
     @Test("isProcessing reflects current state")
     func testIsProcessingReflectsState() {
         let service = ASRService.shared

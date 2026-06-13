@@ -66,32 +66,46 @@ class AudioSplitter {
         return chunks
     }
     
+    func exportWAV(audioURL: URL, outputURL: URL) async throws {
+        let file = try AVAudioFile(forReading: audioURL)
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        let fileBuffer = try readAudio(from: audioURL, start: 0, duration: duration)
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try writeWAV(buffer: fileBuffer, to: outputURL)
+    }
+
     private func exportChunk(from sourceURL: URL, start: TimeInterval, duration: TimeInterval, outputDir: URL, index: Int) async throws -> URL {
         let outputURL = outputDir.appendingPathComponent("chunk_\(index).wav")
         
         do {
             let fileBuffer = try readAudio(from: sourceURL, start: start, duration: duration)
-            
-            // Create output format: 16kHz, Int16, Mono
-            guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false) else {
-                throw NSError(domain: "AudioSplitter", code: -5, userInfo: [NSLocalizedDescriptionKey: "Failed to create output format"])
-            }
-            
-            // Fix: Use explicit init to set processing format to Int16
-            let outputFile = try AVAudioFile(forWriting: outputURL, settings: outputFormat.settings, commonFormat: .pcmFormatInt16, interleaved: false)
-            
-            // Convert
-            if let convertedBuffer = convertToTargetFormat(buffer: fileBuffer, targetFormat: outputFormat) {
-                if convertedBuffer.frameLength > 0 {
-                    try outputFile.write(from: convertedBuffer)
-                }
-            } else {
-                throw NSError(domain: "AudioSplitter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Format conversion failed"])
-            }
-            
+            try writeWAV(buffer: fileBuffer, to: outputURL)
             return outputURL
         } catch {
             throw NSError(domain: "AudioSplitter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Export failed: \(error.localizedDescription)"])
+        }
+    }
+
+    private func writeWAV(buffer: AVAudioPCMBuffer, to outputURL: URL) throws {
+        // Create output format: 16kHz, Int16, Mono
+        guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false) else {
+            throw NSError(domain: "AudioSplitter", code: -5, userInfo: [NSLocalizedDescriptionKey: "Failed to create output format"])
+        }
+
+        // Fix: Use explicit init to set processing format to Int16
+        let outputFile = try AVAudioFile(forWriting: outputURL, settings: outputFormat.settings, commonFormat: .pcmFormatInt16, interleaved: false)
+
+        // Convert
+        if let convertedBuffer = convertToTargetFormat(buffer: buffer, targetFormat: outputFormat) {
+            if convertedBuffer.frameLength > 0 {
+                try outputFile.write(from: convertedBuffer)
+            }
+        } else {
+            throw NSError(domain: "AudioSplitter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Format conversion failed"])
         }
     }
     

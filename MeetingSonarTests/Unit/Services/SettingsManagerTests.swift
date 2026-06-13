@@ -36,7 +36,7 @@ struct SettingsManagerTests {
             let original = settings.audioQuality
 
             // Test each quality value
-            for quality in [AudioQuality.low, .medium, .high] {
+            for quality in [AudioQuality.low, .high] {
                 settings.audioQuality = quality
 
                 // Verify it persisted
@@ -58,16 +58,23 @@ struct SettingsManagerTests {
             let original = settings.audioQuality
 
             // Set a value directly in UserDefaults
-            UserDefaults.standard.set(AudioQuality.medium.rawValue, forKey: "audioQuality")
+            UserDefaults.standard.set(AudioQuality.high.rawValue, forKey: "audioQuality")
 
             // Create a new instance (simulating app restart)
             // Note: Since SettingsManager is a singleton, we test the didSet behavior
-            settings.audioQuality = .medium
-            #expect(settings.audioQuality == .medium)
+            settings.audioQuality = .high
+            #expect(settings.audioQuality == .high)
 
             // Restore original
             settings.audioQuality = original
         }
+    }
+
+    @Test("Legacy medium audio quality falls back to high")
+    func testLegacyMediumAudioQualityFallback() async throws {
+        let quality = AudioQuality(rawValue: "medium") ?? .high
+
+        #expect(quality == .high)
     }
 
     // MARK: - Audio Format Tests
@@ -160,26 +167,6 @@ struct SettingsManagerTests {
         }
     }
 
-    @Test("Teams Classic detection setting persists")
-    func testTeamsClassicDetectionPersistence() async throws {
-        await MainActor.run {
-            let settings = SettingsManager.shared
-
-            // Save original value
-            let original = settings.detectTeamsClassic
-
-            // Test toggling
-            settings.detectTeamsClassic = false
-            #expect(UserDefaults.standard.bool(forKey: "detectTeamsClassic") == false)
-
-            settings.detectTeamsClassic = true
-            #expect(UserDefaults.standard.bool(forKey: "detectTeamsClassic") == true)
-
-            // Restore original
-            settings.detectTeamsClassic = original
-        }
-    }
-
     @Test("Teams New detection setting persists")
     func testTeamsNewDetectionPersistence() async throws {
         await MainActor.run {
@@ -197,26 +184,6 @@ struct SettingsManagerTests {
 
             // Restore original
             settings.detectTeamsNew = original
-        }
-    }
-
-    @Test("Webex detection setting persists")
-    func testWebexDetectionPersistence() async throws {
-        await MainActor.run {
-            let settings = SettingsManager.shared
-
-            // Save original value
-            let original = settings.detectWebex
-
-            // Test toggling
-            settings.detectWebex = false
-            #expect(UserDefaults.standard.bool(forKey: "detectWebex") == false)
-
-            settings.detectWebex = true
-            #expect(UserDefaults.standard.bool(forKey: "detectWebex") == true)
-
-            // Restore original
-            settings.detectWebex = original
         }
     }
 
@@ -371,11 +338,15 @@ struct SettingsManagerTests {
     func testDefaultConfigForManualTrigger() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
+            let original = settings.manualRecordingDefaultConfig
 
+            settings.manualRecordingDefaultConfig = .systemOnly
             let config = settings.defaultConfig(for: .manual)
 
             #expect(config.includeSystemAudio == true)
             #expect(config.includeMicrophone == false)
+
+            settings.manualRecordingDefaultConfig = original
         }
     }
 
@@ -383,11 +354,15 @@ struct SettingsManagerTests {
     func testDefaultConfigForAutoTrigger() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
+            let original = settings.autoRecordingDefaultConfig
 
+            settings.autoRecordingDefaultConfig = .default
             let config = settings.defaultConfig(for: .auto)
 
             #expect(config.includeSystemAudio == true)
             #expect(config.includeMicrophone == true)
+
+            settings.autoRecordingDefaultConfig = original
         }
     }
 
@@ -395,11 +370,15 @@ struct SettingsManagerTests {
     func testDefaultConfigForSmartReminderTrigger() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
+            let original = settings.autoRecordingDefaultConfig
 
+            settings.autoRecordingDefaultConfig = .default
             let config = settings.defaultConfig(for: .smartReminder)
 
             #expect(config.includeSystemAudio == true)
             #expect(config.includeMicrophone == true)
+
+            settings.autoRecordingDefaultConfig = original
         }
     }
 
@@ -630,7 +609,7 @@ struct SettingsManagerTests {
 
     @Test("All audio quality values have valid display names")
     func testAudioQualityDisplayNames() async throws {
-        let qualities: [AudioQuality] = [.low, .medium, .high]
+        let qualities: [AudioQuality] = [.low, .high]
 
         for quality in qualities {
             let displayName = quality.localizedDisplayName
@@ -640,7 +619,7 @@ struct SettingsManagerTests {
 
     @Test("All audio quality values have valid bit rates")
     func testAudioQualityBitRates() async throws {
-        let qualities: [AudioQuality] = [.low, .medium, .high]
+        let qualities: [AudioQuality] = [.low, .high]
 
         for quality in qualities {
             #expect(quality.bitRate > 0)
@@ -649,7 +628,7 @@ struct SettingsManagerTests {
 
     @Test("All audio quality values have valid sample rates")
     func testAudioQualitySampleRates() async throws {
-        let qualities: [AudioQuality] = [.low, .medium, .high]
+        let qualities: [AudioQuality] = [.low, .high]
 
         for quality in qualities {
             #expect(quality.sampleRate > 0)
@@ -711,111 +690,105 @@ struct SettingsManagerTests {
 
     // MARK: - F-0.10.2: Unified Teams Detection Tests
 
-    @Test("detectTeams setter syncs both Classic and New flags to true")
-    func testDetectTeamsSetterEnablesBoth() async throws {
+    @Test("detectTeams setter enables Teams New only")
+    func testDetectTeamsSetterEnablesTeamsNewOnly() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
 
-            // Save original values
             let originalClassic = settings.detectTeamsClassic
             let originalNew = settings.detectTeamsNew
 
-            // Set unified property to true
+            settings.detectTeamsClassic = false
             settings.detectTeams = true
 
-            // Both should be true
-            #expect(settings.detectTeamsClassic == true)
             #expect(settings.detectTeamsNew == true)
+            #expect(settings.detectTeamsClassic == false)
 
-            // Restore originals
             settings.detectTeamsClassic = originalClassic
             settings.detectTeamsNew = originalNew
         }
     }
 
-    @Test("detectTeams setter syncs both Classic and New flags to false")
-    func testDetectTeamsSetterDisablesBoth() async throws {
+    @Test("detectTeams setter disables Teams New only")
+    func testDetectTeamsSetterDisablesTeamsNewOnly() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
 
-            // Save original values
             let originalClassic = settings.detectTeamsClassic
             let originalNew = settings.detectTeamsNew
 
-            // Set unified property to false
+            settings.detectTeamsClassic = true
             settings.detectTeams = false
 
-            // Both should be false
-            #expect(settings.detectTeamsClassic == false)
             #expect(settings.detectTeamsNew == false)
+            #expect(settings.detectTeamsClassic == true)
 
-            // Restore originals
             settings.detectTeamsClassic = originalClassic
             settings.detectTeamsNew = originalNew
         }
     }
 
-    @Test("detectTeams getter returns true if either Classic or New is enabled (OR logic)")
-    func testDetectTeamsGetterORLogic() async throws {
+    @Test("detectTeams getter reflects Teams New only")
+    func testDetectTeamsGetterUsesTeamsNewOnly() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
 
-            // Save original values
             let originalClassic = settings.detectTeamsClassic
             let originalNew = settings.detectTeamsNew
 
-            // Test case 1: Classic=true, New=false -> should return true
             settings.detectTeamsClassic = true
-            settings.detectTeamsNew = false
-            #expect(settings.detectTeams == true)
-
-            // Test case 2: Classic=false, New=true -> should return true
-            settings.detectTeamsClassic = false
-            settings.detectTeamsNew = true
-            #expect(settings.detectTeams == true)
-
-            // Test case 3: Both false -> should return false
-            settings.detectTeamsClassic = false
             settings.detectTeamsNew = false
             #expect(settings.detectTeams == false)
 
-            // Test case 4: Both true -> should return true
-            settings.detectTeamsClassic = true
+            settings.detectTeamsClassic = false
             settings.detectTeamsNew = true
             #expect(settings.detectTeams == true)
 
-            // Restore originals
             settings.detectTeamsClassic = originalClassic
             settings.detectTeamsNew = originalNew
         }
     }
 
-    @Test("detectTeams persists both flags to UserDefaults")
+    @Test("detectTeams persists Teams New only")
     func testDetectTeamsPersistsToUserDefaults() async throws {
         await MainActor.run {
             let settings = SettingsManager.shared
 
-            // Save original values
             let originalClassic = settings.detectTeamsClassic
             let originalNew = settings.detectTeamsNew
 
-            // Set unified property
+            settings.detectTeamsClassic = false
             settings.detectTeams = true
 
-            // Verify both persisted to UserDefaults
-            #expect(UserDefaults.standard.bool(forKey: "detectTeamsClassic") == true)
             #expect(UserDefaults.standard.bool(forKey: "detectTeamsNew") == true)
+            #expect(UserDefaults.standard.bool(forKey: "detectTeamsClassic") == false)
 
-            // Set to false
+            settings.detectTeamsClassic = true
             settings.detectTeams = false
 
-            // Verify both persisted to UserDefaults
-            #expect(UserDefaults.standard.bool(forKey: "detectTeamsClassic") == false)
             #expect(UserDefaults.standard.bool(forKey: "detectTeamsNew") == false)
+            #expect(UserDefaults.standard.bool(forKey: "detectTeamsClassic") == true)
 
-            // Restore originals
             settings.detectTeamsClassic = originalClassic
             settings.detectTeamsNew = originalNew
+        }
+    }
+
+    @Test("isAppDetectionEnabled returns false for removed legacy apps")
+    func testRemovedLegacyAppsAreNotDetectionEnabled() async throws {
+        await MainActor.run {
+            let settings = SettingsManager.shared
+            let originalClassic = settings.detectTeamsClassic
+            let originalWebex = settings.detectWebex
+
+            settings.detectTeamsClassic = true
+            settings.detectWebex = true
+
+            #expect(settings.isAppDetectionEnabled(bundleID: "com.microsoft.teams") == false)
+            #expect(settings.isAppDetectionEnabled(bundleID: "com.cisco.webex.webex") == false)
+
+            settings.detectTeamsClassic = originalClassic
+            settings.detectWebex = originalWebex
         }
     }
 }

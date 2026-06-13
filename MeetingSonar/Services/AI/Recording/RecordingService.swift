@@ -264,6 +264,14 @@ final class RecordingService: RecordingServiceProtocol {
     ///   - trigger: How this recording was started (manual only for v0.1)
     ///   - appName: Optional application name for filename
     func startRecording(trigger: RecordingTrigger = .manual, appName: String? = nil) async throws {
+        try await startRecording(trigger: trigger, appName: appName, detectionInfo: nil)
+    }
+
+    func startRecording(
+        trigger: RecordingTrigger,
+        appName: String?,
+        detectionInfo: MeetingDetectionInfo?
+    ) async throws {
         let t0 = CFAbsoluteTimeGetCurrent()
         guard recordingState == .idle else {
             logger.log(category: .recording, level: .warning, message: "Already recording or paused")
@@ -366,7 +374,8 @@ final class RecordingService: RecordingServiceProtocol {
             source: sourceName,
             startTime: Date(),
             duration: 0,
-            status: .recording
+            status: .recording,
+            detectionInfo: detectionInfo
         )
         await MetadataManager.shared.add(meta)
     }
@@ -411,7 +420,11 @@ final class RecordingService: RecordingServiceProtocol {
     
     /// Stop recording and save the file
     func stopRecording() {
-        stopRecording(withReason: nil)
+        stopRecording(reason: .manualStop)
+    }
+
+    func stopRecording(reason: RecordingStopReason) {
+        stopRecording(withReason: reason.rawValue)
     }
 
     /// Stop recording and save the file with an optional reason
@@ -481,6 +494,9 @@ final class RecordingService: RecordingServiceProtocol {
                     var userInfo: [String: Any] = ["url": closureURL]
                     if let reason = closureReason {
                         userInfo["reason"] = reason
+                        if reason == RecordingStopReason.manualStop.rawValue {
+                            userInfo["isManual"] = true
+                        }
                     } else {
                         userInfo["isManual"] = true
                     }
@@ -544,7 +560,7 @@ final class RecordingService: RecordingServiceProtocol {
         )
         
         // Stop recording
-        stopRecording(withReason: "maxDuration")
+        stopRecording(reason: .maxDuration)
         
         // Notify user
         let center = UNUserNotificationCenter.current()
@@ -899,11 +915,15 @@ final class RecordingService: RecordingServiceProtocol {
         case .full:
             // Full pipeline: transcribe + summarize
             Task {
-                await AIProcessingCoordinator.shared.process(
-                    audioURL: audioURL,
-                    meetingID: meetingID
-                )
-                logger.log(category: .ai, message: "[AutoProcessing] Full processing completed")
+                do {
+                    _ = try await AIProcessingCoordinator.shared.process(
+                        audioURL: audioURL,
+                        meetingID: meetingID
+                    )
+                    logger.log(category: .ai, message: "[AutoProcessing] Full processing completed")
+                } catch {
+                    logger.log(category: .ai, level: .error, message: "[AutoProcessing] Full processing failed: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -973,4 +993,3 @@ enum RecordingError: LocalizedError {
         }
     }
 }
-

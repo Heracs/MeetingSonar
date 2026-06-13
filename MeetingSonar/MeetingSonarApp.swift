@@ -65,9 +65,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlayController = OverlayWindowController.shared // F-2.4 (v0.3.1)
     private let iconGenerator = MenuIconGenerator() // F-2.5 (v0.3.2)
     
-    /// AI Processing Coordinator (v0.5.0)
-    private let aiCoordinator = AIProcessingCoordinator.shared
-    
     /// Timer for updating recording duration display
     private var durationUpdateTimer: Timer?
     
@@ -169,7 +166,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // AI processing is now triggered manually from DetailView
                 if let url = notification.userInfo?["url"] as? URL {
                     self?.lastRecordedURL = url
-                    // F-9.1: No longer calling showAIProcessingPrompt(for: url)
+                    // AI processing is triggered by RecordingService based on auto-processing settings.
                 }
             }
             .store(in: &cancellables)
@@ -650,112 +647,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.alertStyle = .critical
         alert.runModal()
     }
-    
-    // MARK: - AI Processing (v0.5.0)
-    
-    /// Show prompt to generate AI meeting summary after recording stops
-    private func showAIProcessingPrompt(for audioURL: URL) {
-        // Check if AI is available (Apple Silicon only)
-        guard !AICapability.shared.isDisabled else {
-            logger.log(category: .ai, message: "[AI] Skipping prompt - AI not available on this device")
-            return
-        }
-
-        let alert = NSAlert()
-        alert.messageText = NSLocalizedString("alert.recordingSaved.message", comment: "")
-        alert.informativeText = String(format: NSLocalizedString("alert.recordingSaved.informative", comment: ""), audioURL.lastPathComponent)
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: NSLocalizedString("alert.recordingSaved.button.generate", comment: ""))
-        alert.addButton(withTitle: NSLocalizedString("alert.recordingSaved.button.later", comment: ""))
-
-        let response = alert.runModal()
-
-        if response == .alertFirstButtonReturn {
-            startAIProcessing(for: audioURL)
-        }
-    }
-    
-    /// Start AI processing pipeline for the recorded audio (Cloud-only version)
-    private func startAIProcessing(for audioURL: URL) {
-        Task { @MainActor in
-            // Cloud-only: Check if API is configured
-            let isConfigured = await ModelManager.shared.isModelReady(.online)
-
-            if !isConfigured {
-                // Show configuration prompt
-                let shouldConfigure = showAPIConfigPrompt()
-                if !shouldConfigure {
-                    return
-                }
-            }
-
-            // Show processing notification
-            NotificationManager.shared.showAIProcessingNotification()
-
-            // Start processing using the new coordinator
-            do {
-                // F-6.0: Mark as processing
-                await MetadataManager.shared.updateStatus(filename: audioURL.lastPathComponent, status: .processing)
-
-                await AIProcessingCoordinator.shared.process(audioURL: audioURL, meetingID: UUID())
-
-                // F-6.0: Mark as completed
-                await MetadataManager.shared.updateAIStatus(
-                    filename: audioURL.lastPathComponent,
-                    status: .completed,
-                    hasTranscript: true,
-                    hasSummary: false  // TODO: Enable when LLM is implemented
-                )
-
-                // Show completion notification
-                // NotificationManager.shared.showAICompleteNotification(summaryURL: result.summaryURL)
-
-            } catch {
-                // F-6.0: Mark as failed
-                await MetadataManager.shared.updateStatus(filename: audioURL.lastPathComponent, status: .failed)
-
-                logger.log(category: .ai, level: .error, message: "[AI] Processing failed: \(error)")
-                showAIErrorAlert(error: error)
-            }
-        }
-    }
-
-    /// Show API configuration prompt
-    private func showAPIConfigPrompt() -> Bool {
-        let alert = NSAlert()
-        alert.messageText = NSLocalizedString("alert.apiConfigRequired.title", comment: "")
-
-        alert.informativeText = NSLocalizedString("alert.apiConfigRequired.message", comment: "")
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: NSLocalizedString("alert.apiConfigRequired.button.openSettings", comment: ""))
-        alert.addButton(withTitle: NSLocalizedString("alert.apiConfigRequired.button.cancel", comment: ""))
-
-        let result = alert.runModal()
-        if result == .alertFirstButtonReturn {
-            openPreferences()
-        }
-        return false  // Return false to stop processing, user needs to configure first
-    }
-
-    /// Show alert when AI processing completes
-    private func showAICompleteAlert() {
-        let alert = NSAlert()
-        alert.messageText = NSLocalizedString("alert.transcriptionComplete.title", comment: "")
-        alert.informativeText = NSLocalizedString("alert.transcriptionComplete.message", comment: "")
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: NSLocalizedString("alert.button.ok", comment: ""))
-        alert.runModal()
-    }
-
-    /// Show alert when AI processing fails
-    private func showAIErrorAlert(error: Error) {
-        let alert = NSAlert()
-        alert.messageText = NSLocalizedString("alert.aiProcessingFailed.title", comment: "")
-        alert.informativeText = error.localizedDescription
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: NSLocalizedString("alert.aiProcessingFailed.button.ok", comment: ""))
-        alert.runModal()
-    }
 }
 
 // MARK: - Notification Extensions
@@ -788,4 +679,3 @@ extension NSAccessibilityElement {
         self.setAccessibilityIdentifier(id)
     }
 }
-

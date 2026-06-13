@@ -208,6 +208,19 @@ final class VersionManager {
         let settings = SettingsManager.shared
         let selectedId = settings.selectedUnifiedASRId
 
+        if let config = await AIProviderConfigStore.shared.config(byId: selectedId) {
+            return ModelVersionInfo(
+                modelId: config.id.uuidString,
+                displayName: config.asr?.modelName ?? config.displayName,
+                provider: config.providerKey,
+                configuration: [
+                    "providerKey": config.providerKey,
+                    "revision": String(config.revision),
+                    "transport": config.asr?.transport.rawValue ?? ""
+                ]
+            )
+        }
+
         // 尝试从CloudAIModelManager获取详细信息
         if let config = await CloudAIModelManager.shared.getModel(byId: selectedId) {
             return ModelVersionInfo(
@@ -235,6 +248,19 @@ final class VersionManager {
     private func getCurrentLLMModelInfo() async -> ModelVersionInfo {
         let settings = SettingsManager.shared
         let selectedId = settings.selectedUnifiedLLMId
+
+        if let config = await AIProviderConfigStore.shared.config(byId: selectedId) {
+            return ModelVersionInfo(
+                modelId: config.id.uuidString,
+                displayName: config.llm?.modelName ?? config.displayName,
+                provider: config.providerKey,
+                configuration: [
+                    "providerKey": config.providerKey,
+                    "revision": String(config.revision),
+                    "transport": config.llm?.transport.rawValue ?? ""
+                ]
+            )
+        }
 
         // 尝试从CloudAIModelManager获取详细信息
         if let config = await CloudAIModelManager.shared.getModel(byId: selectedId) {

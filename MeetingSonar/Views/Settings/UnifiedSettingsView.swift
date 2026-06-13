@@ -72,8 +72,8 @@ struct UnifiedSettingsView: View {
             Text("settings.language.restart.message")
         }
         .sheet(isPresented: $showAISettings) {
-            CloudAISettingsView()
-                .frame(minWidth: 700, minHeight: 500)
+            AIProviderSettingsView()
+                .frame(minWidth: 760, minHeight: 560)
         }
         .sheet(isPresented: $showAbout) {
             AboutView()
@@ -194,7 +194,10 @@ struct UnifiedSettingsView: View {
                             EmptyView()
                         }
                         .labelsHidden()
-                        Text("\(settings.maxRecordingDurationMinutes) min")
+                        Text(verbatim: String(
+                            format: String(localized: "settings.recording.durationMinutes.%lld"),
+                            Int64(settings.maxRecordingDurationMinutes)
+                        ))
                             .monospacedDigit()
                             .frame(minWidth: 60, alignment: .trailing)
                     }
@@ -331,23 +334,12 @@ struct UnifiedSettingsView: View {
                             Divider()
                                 .padding(.leading, 52)
 
-                            // F-0.10.2: Unified Teams toggle (controls both Classic and New)
                             AppDetectionToggleRow(
                                 appName: "Microsoft Teams",
                                 subtitle: "settings.smartDetection.teams.unified",
-                                bundleIdentifier: "com.microsoft.teams",
+                                bundleIdentifier: "com.microsoft.teams2",
                                 isEnabled: $settings.detectTeams,
                                 icon: "person.2.fill"
-                            )
-
-                            Divider()
-                                .padding(.leading, 42)
-
-                            AppDetectionToggleRow(
-                                appName: "Webex",
-                                bundleIdentifier: "com.cisco.webex.webex",
-                                isEnabled: bindingForApp("com.cisco.webex.webex"),
-                                icon: "video.fill"
                             )
 
                             Divider()
@@ -394,7 +386,7 @@ struct UnifiedSettingsView: View {
 
     // MARK: - AI Services Section
 
-    @State private var aiModels: [CloudAIModelConfig] = []
+    @State private var aiModels: [AIProviderConfig] = []
 
     private var aiServicesSection: some View {
         SectionContainer(
@@ -445,10 +437,13 @@ struct UnifiedSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: CloudAIModelManager.modelsDidChange)) { _ in
             Task { await loadAIModels() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: AIProviderConfigStore.configsDidChange)) { _ in
+            Task { await loadAIModels() }
+        }
     }
 
     @ViewBuilder
-    private func aiModelRow(_ model: CloudAIModelConfig) -> some View {
+    private func aiModelRow(_ model: AIProviderConfig) -> some View {
         let isActiveASR = model.id.uuidString == settings.selectedUnifiedASRId
         let isActiveLLM = model.id.uuidString == settings.selectedUnifiedLLMId
 
@@ -466,7 +461,7 @@ struct UnifiedSettingsView: View {
                 Text(model.displayName)
                     .font(.body)
                     .lineLimit(1)
-                Text(model.provider.displayName)
+                Text(aiProviderDisplayName(for: model))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -491,7 +486,7 @@ struct UnifiedSettingsView: View {
 
             // Capability badges
             HStack(spacing: 4) {
-                ForEach(Array(model.capabilities).sorted(by: { $0.rawValue < $1.rawValue })) { capability in
+                ForEach(Array(model.enabledCapabilities).sorted(by: { $0.rawValue < $1.rawValue }), id: \.self) { capability in
                     Text(capability.rawValue.uppercased())
                         .font(.system(size: 9, weight: .medium, design: .rounded))
                         .padding(.horizontal, 5)
@@ -506,10 +501,18 @@ struct UnifiedSettingsView: View {
     }
 
     private func loadAIModels() async {
-        let models = await CloudAIModelManager.shared.models
+        await settings.refreshAIProviderConfigs()
+        let models = await MainActor.run { settings.cachedAIProviderConfigs }
         await MainActor.run {
             self.aiModels = models
         }
+    }
+
+    private func aiProviderDisplayName(for model: AIProviderConfig) -> String {
+        if model.providerKey == "local.whispercpp" {
+            return "Whisper.cpp"
+        }
+        return model.onlineServiceProvider?.displayName ?? model.providerKey
     }
 
     // MARK: - Transcripts Section
@@ -694,13 +697,10 @@ struct UnifiedSettingsView: View {
         switch bundleIdentifier {
         case "us.zoom.xos":
             return $settings.detectZoom
-        case "com.microsoft.teams", "com.microsoft.teams2":
-            // F-0.10.2: Both Teams IDs use unified toggle
+        case "com.microsoft.teams2":
             return $settings.detectTeams
-        case "com.cisco.webex.webex":
-            return $settings.detectWebex
         default:
-            return .constant(true)
+            return .constant(false)
         }
     }
 
@@ -710,8 +710,7 @@ struct UnifiedSettingsView: View {
         settings.smartDetectionMode = .remind
         settings.audioQuality = .high
         settings.detectZoom = true
-        settings.detectTeams = true  // F-0.10.2: Use unified property
-        settings.detectWebex = true
+        settings.detectTeams = true
         settings.detectTencentMeeting = true
         settings.detectFeishu = true
         settings.detectWeChat = false

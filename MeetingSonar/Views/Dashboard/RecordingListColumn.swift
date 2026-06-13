@@ -39,6 +39,7 @@ struct RecordingListColumn: View {
     @State private var recordingToRename: MeetingMeta?
     @State private var recordingToDelete: MeetingMeta?
     @State private var renameText = ""
+    @State private var deleteErrorMessage: String?
 
     // MARK: - Multi-Select State (F-0.10.17)
     @State private var isSelectionMode: Bool = false
@@ -76,7 +77,11 @@ struct RecordingListColumn: View {
     }
 
     var filteredRecordings: [MeetingMeta] {
-        var result = metadataManager.recordings
+        filteredRecordings(from: metadataManager.recordings)
+    }
+
+    private func filteredRecordings(from source: [MeetingMeta]) -> [MeetingMeta] {
+        var result = source
 
         // Apply filter
         switch filter {
@@ -258,12 +263,15 @@ struct RecordingListColumn: View {
                 selectedRecordingID = first.id
             }
         }
-        .onReceive(metadataManager.$recordings) { _ in
+        .onReceive(metadataManager.$recordings) { recordings in
             // If selected recording was deleted, select the first available
             if let selectedID = selectedRecordingID,
-               !metadataManager.recordings.contains(where: { $0.id == selectedID }),
-               let first = filteredRecordings.first {
-                selectedRecordingID = first.id
+               !recordings.contains(where: { $0.id == selectedID }) {
+                selectedRecordingID = DashboardSelectionPolicy.selectionAfterDeleting(
+                    currentSelection: selectedID,
+                    deletedID: selectedID,
+                    remainingRecordings: filteredRecordings(from: recordings)
+                )
             }
         }
         // MARK: - Merge Confirmation Alert (F-0.10.17)
@@ -294,14 +302,14 @@ struct RecordingListColumn: View {
             }
         }
         // MARK: - Delete Confirmation Alert
-        .alert("确认删除", isPresented: .init(
+        .alert(String(localized: "Delete Recording?"), isPresented: .init(
             get: { recordingToDelete != nil },
             set: { if !$0 { recordingToDelete = nil } }
         )) {
-            Button("取消", role: .cancel) {
+            Button(String(localized: "button.cancel"), role: .cancel) {
                 recordingToDelete = nil
             }
-            Button("删除", role: .destructive) {
+            Button(String(localized: "button.delete"), role: .destructive) {
                 if let recording = recordingToDelete {
                     deleteRecording(recording)
                 }
@@ -309,7 +317,22 @@ struct RecordingListColumn: View {
             }
         } message: {
             if let recording = recordingToDelete {
-                Text("确定要删除「\(recording.title)」吗？此操作不可撤销。")
+                Text(String(
+                    format: String(localized: "Are you sure you want to permanently delete '%@'? This cannot be undone."),
+                    recording.title
+                ))
+            }
+        }
+        .alert(String(localized: "alert.deleteFailed"), isPresented: .init(
+            get: { deleteErrorMessage != nil },
+            set: { if !$0 { deleteErrorMessage = nil } }
+        )) {
+            Button(String(localized: "button.confirm"), role: .cancel) {
+                deleteErrorMessage = nil
+            }
+        } message: {
+            if let deleteErrorMessage {
+                Text(deleteErrorMessage)
             }
         }
         // MARK: - Rename Sheet
@@ -341,10 +364,16 @@ struct RecordingListColumn: View {
     }
 
     private func deleteRecording(_ recording: MeetingMeta) {
-        Task {
+        Task { @MainActor in
             do {
                 try await MetadataManager.shared.delete(id: recording.id)
+                selectedRecordingID = DashboardSelectionPolicy.selectionAfterDeleting(
+                    currentSelection: selectedRecordingID,
+                    deletedID: recording.id,
+                    remainingRecordings: filteredRecordings
+                )
             } catch {
+                deleteErrorMessage = error.localizedDescription
                 LoggerService.shared.log(
                     category: .ui,
                     level: .error,
@@ -485,7 +514,7 @@ struct RecordingContextMenu: View {
         Divider()
 
         Button(role: .destructive, action: onDelete) {
-            Label("删除", systemImage: "trash")
+            Label(String(localized: "button.delete"), systemImage: "trash")
         }
     }
 }

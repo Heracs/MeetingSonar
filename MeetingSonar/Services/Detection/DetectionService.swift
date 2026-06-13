@@ -1,45 +1,76 @@
 import Foundation
 import Combine
 
-// MARK: - Detection State Machine Types
-
-enum DetectionState: Equatable {
-    case monitoringAll(suppressedApps: Set<String>)
-    case recordingLocked(RecordingContext)
-    case cooldown(CooldownContext)
+struct StartCandidateReevaluationDecision {
+    static func shouldSchedule(event: DetectionBusinessEvent, snapshot: AppSignalSnapshot) -> Bool {
+        guard case .meetingStartCandidate = event else {
+            return false
+        }
+        return snapshot.micState == .active
+    }
 }
 
-struct RecordingContext: Equatable {
-    let triggerAppBundleID: String
-    let triggerAppName: String
-    let triggerSource: TriggerSource
-    let triggerTimestamp: Date
+struct MonitoringReevaluationDecision {
+    static func shouldSchedule(
+        needsStartCandidateReevaluation: Bool,
+        pendingSuppressionClearCandidateCounts: [String: Int]
+    ) -> Bool {
+        needsStartCandidateReevaluation || !pendingSuppressionClearCandidateCounts.isEmpty
+    }
 }
 
-enum TriggerSource: String, Equatable {
-    case windowTitle
-    case micUsage
-    case manual
-    case reminderAccepted
-}
+struct ManualStopCooldownSuppressionReleaseDecision {
+    struct Result: Equatable {
+        let shouldReleaseSuppression: Bool
+        let nextStableSampleCount: Int
+    }
 
-struct CooldownContext: Equatable {
-    let reason: CooldownReason
-    let triggerAppBundleID: String?
-    let triggerAppName: String?
-    let triggerType: TriggerSource?
-    let recordingDuration: TimeInterval?
-    var suppressedApps: Set<String>
-    let cooldownStartTime: Date
-    let cooldownDuration: TimeInterval
-}
+    static func evaluate(
+        cooldown: CooldownContext,
+        snapshot: AppSignalSnapshot,
+        policy: DetectionPolicy,
+        currentStableSampleCount: Int,
+        requiredStableSamples: Int
+    ) -> Result {
+        guard cooldown.reason == .manualStop,
+              let bundleID = cooldown.triggerAppBundleID,
+              cooldown.suppressedApps.contains(bundleID),
+              snapshot.app.bundleIdentifier == bundleID else {
+            return Result(shouldReleaseSuppression: false, nextStableSampleCount: 0)
+        }
 
-enum CooldownReason: String, Equatable {
-    case autoStop
-    case manualStop
-    case maxDuration
-    case appCrashed
-    case appDisabled
+        guard hasStableReleaseBoundary(snapshot: snapshot, policy: policy) else {
+            return Result(shouldReleaseSuppression: false, nextStableSampleCount: 0)
+        }
+
+        let requiredSamples = max(1, requiredStableSamples)
+        let nextCount = currentStableSampleCount + 1
+        guard nextCount >= requiredSamples else {
+            return Result(shouldReleaseSuppression: false, nextStableSampleCount: nextCount)
+        }
+
+        return Result(shouldReleaseSuppression: true, nextStableSampleCount: 0)
+    }
+
+    static func hasStableReleaseBoundary(
+        snapshot: AppSignalSnapshot,
+        policy: DetectionPolicy
+    ) -> Bool {
+        guard snapshot.micState == .inactive else {
+            return false
+        }
+
+        if policy.windowReliability == .unavailable {
+            return true
+        }
+
+        switch snapshot.windowState {
+        case .none, .mainWindow, .preJoin:
+            return true
+        case .meetingUI, .leavingConfirmation, .unknownMatched:
+            return false
+        }
+    }
 }
 
 /// Coordinator for Smart Awareness features (F-2.2)
@@ -57,15 +88,11 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     private let logger: LoggerService
 
     private var cancellables = Set<AnyCancellable>()
+    private var signalInterpreter = SignalInterpreter()
+    private let stateReducer = DetectionStateReducer()
 
     /// Current state of the detection state machine
     @Published private(set) var detectionState: DetectionState = .monitoringAll(suppressedApps: [])
-
-    /// Consecutive no-signal polling cycles for auto-stop debounce
-    private var consecutiveNoSignalCount: Int = 0
-    /// Consecutive active-signal cycles before resetting the stop debounce (reverse hysteresis)
-    private var reverseDebounceCount: Int = 0
-    private let debounceThreshold: Int = 2
 
     /// Cooldown configuration
     private let cooldownDuration: TimeInterval = 5.0
@@ -73,9 +100,17 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     /// Timer for cooldown exit
     private var cooldownTimer: Timer?
 
+    /// Timer for periodic signal re-evaluation while a mic-only start candidate is debouncing.
+    private var startCandidateEvalTimer: Timer?
+
     /// Timer for periodic signal re-evaluation during recording (Issue 2 fix).
     /// Ensures auto-stop detection even when LogMonitor misses CoreAudio mic-off events.
     private var recordingEvalTimer: Timer?
+
+    private var suppressionClearCandidateCounts: [String: Int] = [:]
+    private var manualStopCooldownClearCandidateCounts: [String: Int] = [:]
+    private let suppressionClearStableSampleCount = 2
+    private let cooldownStableBoundaryRecheckInterval: TimeInterval = 1.0
 
     /// Test mode flag
     private let testMode: Bool
@@ -207,7 +242,10 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     /// LogMonitorService (mic usage) and transitions the detection state machine.
     @MainActor
     private func evaluateMeetingSignals(activeMeetingApps: Set<String>, activeMicUsers: Set<String>) {
-        guard settings.smartDetectionEnabled else { return }
+        guard settings.smartDetectionEnabled else {
+            updateStartCandidateReevaluationTimer(shouldRun: false)
+            return
+        }
 
         logger.log(category: .detection, level: .debug, message: """
             [DetectionService] evaluateMeetingSignals
@@ -218,38 +256,141 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
             """)
 
         switch detectionState {
-        case .monitoringAll(let suppressedApps):
-            for bundleID in activeMeetingApps {
-                if let state = appMonitor.appStates[bundleID],
-                   case .inMeeting = state.meetingState {
-                    let app = state.config
-                    guard !suppressedApps.contains(bundleID) else {
-                        logger.log(category: .detection, level: .debug, message: "[Decision] triggerApp \(app.processName) is in suppressedApps, ignoring")
-                        return
-                    }
-                    // FIXME(Task 9): settings.isAppDetectionEnabled(bundleID:) not yet implemented
-                    if settings.isAppDetectionEnabled(bundleID: bundleID) {
-                        handleMeetingDetected(appName: app.processName, bundleID: bundleID, source: .windowTitle)
-                        return
-                    }
-                }
-            }
+        case .monitoringAll:
+            var needsStartCandidateReevaluation = false
 
-            if let micApp = findMonitoredAppUsingMic(activeMicUsers) {
-                guard !suppressedApps.contains(micApp.bundleIdentifier) else {
-                    logger.log(category: .detection, level: .debug, message: "[Decision] micApp \(micApp.processName) is in suppressedApps, ignoring")
+            for snapshot in snapshots(activeMicUsers: activeMicUsers) {
+                guard settings.isAppDetectionEnabled(bundleID: snapshot.app.bundleIdentifier) else {
+                    continue
+                }
+                let policy = DetectionPolicy.defaultPolicy(for: snapshot.app)
+                if shouldClearSuppression(for: snapshot, policy: policy) {
+                    apply(
+                        stateReducer.reduce(
+                            state: detectionState,
+                            event: .suppressionCleared(bundleID: snapshot.app.bundleIdentifier),
+                            environment: reducerEnvironment()
+                        )
+                    )
+                }
+                let event = signalInterpreter.startEvent(for: snapshot, policy: policy)
+                if StartCandidateReevaluationDecision.shouldSchedule(event: event, snapshot: snapshot) {
+                    needsStartCandidateReevaluation = true
+                }
+                apply(
+                    stateReducer.reduce(
+                        state: detectionState,
+                        event: event,
+                        environment: reducerEnvironment()
+                    )
+                )
+                if case .recordingLocked = detectionState {
+                    updateStartCandidateReevaluationTimer(shouldRun: false)
                     return
                 }
-                handleMeetingDetected(appName: micApp.processName, bundleID: micApp.bundleIdentifier, source: .micUsage)
-                return
             }
+            updateStartCandidateReevaluationTimer(
+                shouldRun: MonitoringReevaluationDecision.shouldSchedule(
+                    needsStartCandidateReevaluation: needsStartCandidateReevaluation,
+                    pendingSuppressionClearCandidateCounts: suppressionClearCandidateCounts
+                )
+            )
 
         case .recordingLocked(let ctx):
+            updateStartCandidateReevaluationTimer(shouldRun: false)
             evaluateDuringRecording(context: ctx)
 
-        case .cooldown:
-            break
+        case .cooldown(let cooldown):
+            updateStartCandidateReevaluationTimer(shouldRun: false)
+            evaluateCooldownResidual(cooldown)
         }
+    }
+
+    @MainActor
+    private func snapshots(activeMicUsers: Set<String>) -> [AppSignalSnapshot] {
+        appMonitor.enabledApps.compactMap { app in
+            let micState: MicSignalState = isMicActive(for: app, activeMicUsers: activeMicUsers) ? .active : .inactive
+            return appMonitor.snapshot(
+                for: app.bundleIdentifier,
+                micState: micState,
+                now: Date()
+            )
+        }
+    }
+
+    @MainActor
+    private func shouldClearSuppression(
+        for snapshot: AppSignalSnapshot,
+        policy: DetectionPolicy
+    ) -> Bool {
+        guard case .monitoringAll(let suppressedApps) = detectionState,
+              suppressedApps.contains(snapshot.app.bundleIdentifier) else {
+            suppressionClearCandidateCounts[snapshot.app.bundleIdentifier] = nil
+            return false
+        }
+
+        guard ManualStopCooldownSuppressionReleaseDecision.hasStableReleaseBoundary(
+            snapshot: snapshot,
+            policy: policy
+        ) else {
+            suppressionClearCandidateCounts[snapshot.app.bundleIdentifier] = nil
+            return false
+        }
+
+        let nextCount = (suppressionClearCandidateCounts[snapshot.app.bundleIdentifier] ?? 0) + 1
+        suppressionClearCandidateCounts[snapshot.app.bundleIdentifier] = nextCount
+
+        guard nextCount >= suppressionClearStableSampleCount else {
+            return false
+        }
+
+        logger.log(
+            category: .detection,
+            level: .debug,
+            message: "[Decision] suppression clear confirmed: bundleID=\(snapshot.app.bundleIdentifier), windowState=\(snapshot.windowState)"
+        )
+        suppressionClearCandidateCounts[snapshot.app.bundleIdentifier] = nil
+        return true
+    }
+
+    private func isMicActive(for app: ApplicationMonitor.MonitoredApp, activeMicUsers: Set<String>) -> Bool {
+        if activeMicUsers.contains(app.processName) { return true }
+        return app.logProcessAliases.contains { activeMicUsers.contains($0) }
+    }
+
+    private func reducerEnvironment(now: Date = Date()) -> DetectionReducerEnvironment {
+        DetectionReducerEnvironment(
+            mode: settings.smartDetectionMode,
+            smartDetectionEnabled: settings.smartDetectionEnabled,
+            isRecording: recordingService.isRecording,
+            now: now,
+            cooldownDuration: cooldownDuration
+        )
+    }
+
+    @MainActor
+    private func updateStartCandidateReevaluationTimer(shouldRun: Bool) {
+        if shouldRun {
+            guard startCandidateEvalTimer == nil else { return }
+            logger.log(category: .detection, level: .debug, message: "[DetectionService] start candidate re-evaluation timer started")
+            startCandidateEvalTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard case .monitoringAll = self.detectionState else {
+                        self.updateStartCandidateReevaluationTimer(shouldRun: false)
+                        return
+                    }
+                    self.evaluateMeetingSignals(
+                        activeMeetingApps: self.appMonitor.activeMeetingApps,
+                        activeMicUsers: self.logMonitor.activeMicUsers
+                    )
+                }
+            }
+            return
+        }
+
+        startCandidateEvalTimer?.invalidate()
+        startCandidateEvalTimer = nil
     }
 
     /// Evaluates window and mic signals during an active recording to determine
@@ -264,78 +405,185 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
         // Skip auto-stop until recording has been running long enough to stabilize signals.
         let elapsed = Date().timeIntervalSince(context.triggerTimestamp)
         guard elapsed >= minRecordingDurationBeforeAutoStop else {
-            consecutiveNoSignalCount = 0
-            reverseDebounceCount = 0
             return
         }
 
-        let hasWindowSignal: Bool = {
-            if let state = appMonitor.appStates[context.triggerAppBundleID],
-               case .inMeeting = state.meetingState {
-                return true
-            }
-            return false
-        }()
+        guard let snapshot = appMonitor.snapshot(
+            for: context.triggerAppBundleID,
+            micState: isMicActiveForContext(context) ? .active : .inactive,
+            now: Date()
+        ) else {
+            apply(
+                stateReducer.reduce(
+                    state: detectionState,
+                    event: .triggerAppTerminated(bundleID: context.triggerAppBundleID),
+                    environment: reducerEnvironment()
+                )
+            )
+            return
+        }
 
-        let hasWindowPatterns: Bool = {
-            appMonitor.appStates[context.triggerAppBundleID]?.config.meetingWindowPatterns.isEmpty == false
-        }()
-
-        let hasMicSignal: Bool = {
-            if let state = appMonitor.appStates[context.triggerAppBundleID] {
-                let config = state.config
-                return logMonitor.activeMicUsers.contains { name in
-                    name == config.processName || config.logProcessAliases.contains(name)
-                }
-            }
-            return false
-        }()
-
-        // Window-based debounce only applies when the meeting was detected via window title.
-        // For mic-triggered recordings (window never matched), rely solely on mic signal.
-        let useWindowSignal = context.triggerSource == .windowTitle && hasWindowPatterns
-        let windowGone = useWindowSignal && !hasWindowSignal
-        let micGone = !hasMicSignal
-        let signalsActive = (!windowGone) && (!micGone)
-
+        let policy = DetectionPolicy.defaultPolicy(for: snapshot.app)
+        let event = signalInterpreter.recordingEvent(for: snapshot, policy: policy, context: context)
         logger.log(category: .detection, level: .debug, message: """
             [Decision] evaluateDuringRecording for \(context.triggerAppName)
-            ├─ hasWindowSignal: \(hasWindowSignal) (patterns: \(hasWindowPatterns))
-            ├─ hasMicSignal: \(hasMicSignal) (activeMicUsers: \(logMonitor.activeMicUsers))
-            ├─ windowGone: \(windowGone), micGone: \(micGone)
-            ├─ signalsActive: \(signalsActive)
-            └─ consecutiveNoSignalCount: \(consecutiveNoSignalCount)/\(debounceThreshold)
+            ├─ windowState: \(snapshot.windowState)
+            ├─ micState: \(snapshot.micState)
+            ├─ event: \(event)
+            └─ activeMicUsers: \(logMonitor.activeMicUsers)
             """)
+        apply(
+            stateReducer.reduce(
+                state: detectionState,
+                event: event,
+                environment: reducerEnvironment()
+            )
+        )
+    }
 
-        if !signalsActive {
-            consecutiveNoSignalCount += 1
-            reverseDebounceCount = 0
-            logger.log(category: .detection, level: .debug, message: "[Decision] autoStopDebounce: \(consecutiveNoSignalCount)/\(debounceThreshold) no-signal cycles for \(context.triggerAppName)")
+    private func isMicActiveForContext(_ context: RecordingContext) -> Bool {
+        guard let state = appMonitor.appStates[context.triggerAppBundleID] else { return false }
+        return isMicActive(for: state.config, activeMicUsers: logMonitor.activeMicUsers)
+    }
 
-            if consecutiveNoSignalCount >= debounceThreshold {
-                let duration = Date().timeIntervalSince(context.triggerTimestamp)
-                let cooldownCtx = CooldownContext(
-                    reason: .autoStop,
-                    triggerAppBundleID: context.triggerAppBundleID,
-                    triggerAppName: context.triggerAppName,
-                    triggerType: context.triggerSource,
-                    recordingDuration: duration,
-                    suppressedApps: [],
-                    cooldownStartTime: Date(),
-                    cooldownDuration: cooldownDuration
+    private func isMicActiveForCooldown(_ cooldown: CooldownContext) -> Bool {
+        guard let bundleID = cooldown.triggerAppBundleID,
+              let state = appMonitor.appStates[bundleID] else {
+            return false
+        }
+        return isMicActive(for: state.config, activeMicUsers: logMonitor.activeMicUsers)
+    }
+
+    @MainActor
+    private func evaluateCooldownResidual(_ cooldown: CooldownContext) {
+        guard let bundleID = cooldown.triggerAppBundleID,
+              let snapshot = appMonitor.snapshot(
+                  for: bundleID,
+                  micState: isMicActiveForCooldown(cooldown) ? .active : .inactive,
+                  now: Date()
+              ) else {
+            apply(
+                stateReducer.reduce(
+                    state: detectionState,
+                    event: .residualSignalsCleared(bundleID: cooldown.triggerAppBundleID ?? "unknown"),
+                    environment: reducerEnvironment()
                 )
-                transition(to: .cooldown(cooldownCtx))
-                scheduleCooldownExit(context: cooldownCtx)
-                consecutiveNoSignalCount = 0
-            }
-        } else {
-            // Reverse debounce: require sustained active signals before resetting the stop countdown.
-            // Prevents single-cycle flickers (e.g. post-meeting Zoom/Feishu windows) from
-            // resetting the auto-stop debounce.
-            reverseDebounceCount += 1
-            if reverseDebounceCount >= debounceThreshold {
-                consecutiveNoSignalCount = 0
-                reverseDebounceCount = 0
+            )
+            return
+        }
+
+        let policy = DetectionPolicy.defaultPolicy(for: snapshot.app)
+        let event = signalInterpreter.residualEvent(
+            for: snapshot,
+            cooldownStartedAt: cooldown.cooldownStartTime,
+            policy: policy
+        )
+        logger.log(category: .detection, level: .debug, message: """
+            [Decision] cooldown residual check for \(snapshot.app.processName)
+            ├─ windowState: \(snapshot.windowState)
+            ├─ micState: \(snapshot.micState)
+            └─ event: \(event)
+            """)
+        if handleManualStopCooldownSuppressionRelease(
+            cooldown: cooldown,
+            snapshot: snapshot,
+            policy: policy,
+            event: event
+        ) {
+            return
+        }
+
+        apply(
+            stateReducer.reduce(
+                state: detectionState,
+                event: event,
+                environment: reducerEnvironment()
+            )
+        )
+    }
+
+    @MainActor
+    private func handleManualStopCooldownSuppressionRelease(
+        cooldown: CooldownContext,
+        snapshot: AppSignalSnapshot,
+        policy: DetectionPolicy,
+        event: DetectionBusinessEvent
+    ) -> Bool {
+        guard cooldown.reason == .manualStop,
+              let bundleID = cooldown.triggerAppBundleID,
+              cooldown.suppressedApps.contains(bundleID),
+              snapshot.app.bundleIdentifier == bundleID else {
+            return false
+        }
+
+        guard case .residualSignalsCleared = event else {
+            manualStopCooldownClearCandidateCounts[bundleID] = nil
+            return false
+        }
+
+        let decision = ManualStopCooldownSuppressionReleaseDecision.evaluate(
+            cooldown: cooldown,
+            snapshot: snapshot,
+            policy: policy,
+            currentStableSampleCount: manualStopCooldownClearCandidateCounts[bundleID] ?? 0,
+            requiredStableSamples: suppressionClearStableSampleCount
+        )
+
+        guard decision.shouldReleaseSuppression else {
+            manualStopCooldownClearCandidateCounts[bundleID] = decision.nextStableSampleCount == 0
+                ? nil
+                : decision.nextStableSampleCount
+            logger.log(
+                category: .detection,
+                level: .debug,
+                message: "[Decision] manual stop suppression release pending: bundleID=\(bundleID), stableSamples=\(decision.nextStableSampleCount)/\(suppressionClearStableSampleCount)"
+            )
+            scheduleCooldownResidualCheck(context: cooldown, after: cooldownStableBoundaryRecheckInterval)
+            return true
+        }
+
+        manualStopCooldownClearCandidateCounts[bundleID] = nil
+        var releasedCooldown = cooldown
+        releasedCooldown.suppressedApps.remove(bundleID)
+        logger.log(
+            category: .detection,
+            level: .debug,
+            message: "[Decision] manual stop suppression released at stable leave boundary: bundleID=\(bundleID)"
+        )
+        apply(
+            stateReducer.reduce(
+                state: .cooldown(releasedCooldown),
+                event: event,
+                environment: reducerEnvironment()
+            )
+        )
+        return true
+    }
+
+    @MainActor
+    private func apply(_ result: DetectionReducerResult) {
+        if detectionState != result.state {
+            transition(to: result.state)
+        }
+
+        for action in result.actions {
+            switch action {
+            case .startRecording(let context):
+                startRecording(for: context)
+            case .stopRecording(let reason):
+                recordingService.stopRecording(reason: reason)
+            case .showReminder(let appName, let mode):
+                NotificationCenter.default.post(
+                    name: .showRemindOverlay,
+                    object: nil,
+                    userInfo: ["appName": appName, "mode": mode]
+                )
+            case .scheduleCooldown(let cooldown):
+                scheduleCooldownExit(context: cooldown)
+            case .logCandidate(let bundleID, let reason):
+                logger.log(category: .detection, level: .debug, message: "[Decision] candidate ignored: bundleID=\(bundleID), reason=\(reason)")
+            case .none:
+                break
             }
         }
     }
@@ -361,13 +609,15 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     @MainActor
     private func canTransition(from oldState: DetectionState, to newState: DetectionState) -> Bool {
         switch (oldState, newState) {
+        case (.monitoringAll, .monitoringAll):
+            return true
         case (.monitoringAll, .recordingLocked):
             guard settings.smartDetectionEnabled else { return false }
             guard settings.smartDetectionMode == .auto else { return false }
             guard !recordingService.isRecording else { return false }
             return true
         case (.recordingLocked, .cooldown):
-            return true  // stopRecording is handled by executeTransitionSideEffects
+            return true
         case (.recordingLocked, .monitoringAll):
             return !settings.smartDetectionEnabled
         case (.cooldown, .monitoringAll):
@@ -384,14 +634,14 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     private func executeTransitionSideEffects(from oldState: DetectionState, to newState: DetectionState) {
         switch (oldState, newState) {
         case (_, .cooldown):
-            consecutiveNoSignalCount = 0
-            reverseDebounceCount = 0
+            startCandidateEvalTimer?.invalidate()
+            startCandidateEvalTimer = nil
+            manualStopCooldownClearCandidateCounts.removeAll()
             recordingEvalTimer?.invalidate()
             recordingEvalTimer = nil
-            if recordingService.isRecording {
-                recordingService.stopRecording()
-            }
         case (_, .recordingLocked):
+            startCandidateEvalTimer?.invalidate()
+            startCandidateEvalTimer = nil
             // Start periodic signal re-evaluation (Issue 2 fix)
             recordingEvalTimer?.invalidate()
             recordingEvalTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -403,9 +653,6 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
         case (.recordingLocked, .monitoringAll):
             recordingEvalTimer?.invalidate()
             recordingEvalTimer = nil
-            if recordingService.isRecording {
-                recordingService.stopRecording()
-            }
         case (.cooldown, .recordingLocked):
             cooldownTimer?.invalidate()
             cooldownTimer = nil
@@ -425,11 +672,31 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
         }
     }
 
+    private func scheduleCooldownResidualCheck(context: CooldownContext, after interval: TimeInterval) {
+        cooldownTimer?.invalidate()
+        logger.log(
+            category: .detection,
+            level: .debug,
+            message: "[DetectionService] cooldown residual recheck scheduled: reason=\(context.reason.rawValue), duration=\(interval)s"
+        )
+        cooldownTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard case .cooldown(let currentContext) = self?.detectionState else { return }
+                self?.evaluateCooldownResidual(currentContext)
+            }
+        }
+    }
+
     /// Exits the cooldown state and transitions back to monitoringAll.
     /// The suppressed apps set depends on the cooldown reason.
     @MainActor
     private func exitCooldown() {
         guard case .cooldown(let ctx) = detectionState else { return }
+
+        if ctx.reason != .maxDuration {
+            evaluateCooldownResidual(ctx)
+            return
+        }
 
         switch ctx.reason {
         case .autoStop, .appCrashed:
@@ -567,38 +834,27 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
     }
     
     // Old handleStateChange removed. Logic moved to evaluateMeetingStatus.
-    
-    @MainActor
-    private func handleMeetingDetected(appName: String, bundleID: String, source: TriggerSource) {
-        logger.log(category: .detection, level: .debug, message: "[DetectionService] handleMeetingDetected: appName=\(appName), bundleID=\(bundleID), source=\(source)")
 
-        guard !recordingService.isRecording else { return }
-        guard settings.smartDetectionEnabled else { return }
-
-        switch settings.smartDetectionMode {
-        case .auto:
-            let ctx = RecordingContext(
-                triggerAppBundleID: bundleID,
-                triggerAppName: appName,
-                triggerSource: source,
-                triggerTimestamp: Date()
-            )
-            transition(to: .recordingLocked(ctx))
-
-            Task {
-                do {
-                    try await recordingService.startRecording(trigger: .auto, appName: appName)
-                    notificationManager.sendAutoStartNotification(appName: appName)
-                    logger.log(category: .detection, message: "Auto-recording started for \(appName)")
-                } catch {
-                    logger.log(category: .detection, level: .error, message: "Auto-recording failed: \(error)")
-                    detectionState = .monitoringAll(suppressedApps: [])
-                }
+    private func startRecording(for context: RecordingContext) {
+        Task {
+            do {
+                let detectionInfo = MeetingDetectionInfo(
+                    triggerAppBundleID: context.triggerAppBundleID,
+                    triggerSource: context.triggerSource.rawValue,
+                    participantCount: context.participantCount,
+                    participantCountConfidence: context.participantCountConfidence?.rawValue
+                )
+                try await recordingService.startRecording(
+                    trigger: context.triggerSource == .reminderAccepted ? .smartReminder : .auto,
+                    appName: context.triggerAppName,
+                    detectionInfo: detectionInfo
+                )
+                notificationManager.sendAutoStartNotification(appName: context.triggerAppName)
+                logger.log(category: .detection, message: "Auto-recording started for \(context.triggerAppName)")
+            } catch {
+                logger.log(category: .detection, level: .error, message: "Auto-recording failed: \(error)")
+                detectionState = .monitoringAll(suppressedApps: [])
             }
-
-        case .remind:
-            NotificationCenter.default.post(name: .showRemindOverlay, object: nil, userInfo: ["appName": appName])
-            logger.log(category: .detection, message: "Reminder overlay shown for \(appName)")
         }
     }
     
@@ -607,6 +863,11 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
         logger.log(category: .detection, level: .debug, message: "[DetectionService] handleRecordingStopped")
 
         Task { @MainActor in
+            if case .cooldown = detectionState {
+                sendSavedNotification(from: notification)
+                return
+            }
+
             if case .recordingLocked(let ctx) = detectionState {
                 let duration = Date().timeIntervalSince(ctx.triggerTimestamp)
 
@@ -629,7 +890,10 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
                     triggerAppName: ctx.triggerAppName,
                     triggerType: ctx.triggerSource,
                     recordingDuration: duration,
-                    suppressedApps: [],
+                    suppressedApps: DetectionStateReducer.suppressedApps(
+                        for: reason,
+                        triggerAppBundleID: ctx.triggerAppBundleID
+                    ),
                     cooldownStartTime: Date(),
                     cooldownDuration: cooldownDuration
                 )
@@ -637,11 +901,15 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
                 scheduleCooldownExit(context: cooldownCtx)
             }
 
-            if let url = notification.userInfo?["url"] as? URL {
-                notificationManager.sendRecordingSavedNotification(path: url)
-            } else {
-                notificationManager.sendRecordingSavedNotification(path: settings.savePath)
-            }
+            sendSavedNotification(from: notification)
+        }
+    }
+
+    private func sendSavedNotification(from notification: Notification) {
+        if let url = notification.userInfo?["url"] as? URL {
+            notificationManager.sendRecordingSavedNotification(path: url)
+        } else {
+            notificationManager.sendRecordingSavedNotification(path: settings.savePath)
         }
     }
     
@@ -679,7 +947,16 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
 
         Task {
             do {
-                try await recordingService.startRecording(trigger: .manual, appName: nil)
+                try await recordingService.startRecording(
+                    trigger: .smartReminder,
+                    appName: triggerAppName,
+                    detectionInfo: MeetingDetectionInfo(
+                        triggerAppBundleID: triggerAppBundleID,
+                        triggerSource: triggerSource.rawValue,
+                        participantCount: ctx.participantCount,
+                        participantCountConfidence: ctx.participantCountConfidence?.rawValue
+                    )
+                )
                 logger.log(category: .detection, message: "Recording started from notification/reminder")
             } catch {
                 logger.log(category: .detection, level: .error, message: "Failed to start recording: \(error)")
@@ -699,8 +976,12 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
         // Invalidate timers and reset state machine
         cooldownTimer?.invalidate()
         cooldownTimer = nil
+        startCandidateEvalTimer?.invalidate()
+        startCandidateEvalTimer = nil
         recordingEvalTimer?.invalidate()
         recordingEvalTimer = nil
+        suppressionClearCandidateCounts.removeAll()
+        manualStopCooldownClearCandidateCounts.removeAll()
         detectionState = .monitoringAll(suppressedApps: [])
 
         logger.log(category: .detection, message: "DetectionService cleaned up")
@@ -716,6 +997,10 @@ class DetectionService: ObservableObject, DetectionServiceProtocol {
         // Timer cleanup is safe from deinit
         cooldownTimer?.invalidate()
         cooldownTimer = nil
+        startCandidateEvalTimer?.invalidate()
+        startCandidateEvalTimer = nil
+        recordingEvalTimer?.invalidate()
+        recordingEvalTimer = nil
     }
 }
 

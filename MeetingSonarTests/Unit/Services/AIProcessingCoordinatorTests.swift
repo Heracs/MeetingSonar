@@ -262,6 +262,46 @@ struct AIProcessingCoordinatorTests {
         }
     }
 
+    @Test("LLM runtime selection uses provider backed config")
+    func testResolveLLMRuntimeUsesProviderConfigSelection() async throws {
+        let coordinator = AIProcessingCoordinator.shared
+        let previousSelection = SettingsManager.shared.selectedUnifiedLLMId
+        var insertedConfigID: UUID?
+
+        do {
+            let cloudConfig = CloudAIModelConfig(
+                displayName: "DeepSeek Chat",
+                provider: .deepseek,
+                baseURL: OnlineServiceProvider.deepseek.defaultBaseURL,
+                capabilities: [.llm],
+                llmConfig: LLMModelSettings(
+                    modelName: "deepseek-chat",
+                    qualityPreset: .balanced,
+                    temperature: nil,
+                    maxTokens: nil
+                )
+            )
+            let providerConfig = try #require(AIProviderConfigStore.convert(cloudConfig))
+            await AIProviderConfigStore.shared.upsert(providerConfig)
+            insertedConfigID = providerConfig.id
+            SettingsManager.shared.selectedUnifiedLLMId = providerConfig.id.uuidString
+
+            let selectedRuntime = try await coordinator.resolveLLMRuntimeForCurrentSelection()
+
+            #expect(selectedRuntime.providerKey == "cloud.deepseek")
+            #expect(selectedRuntime.modelName == "deepseek-chat")
+
+            await AIProviderConfigStore.shared.delete(id: providerConfig.id)
+            SettingsManager.shared.selectedUnifiedLLMId = previousSelection
+        } catch {
+            if let insertedConfigID {
+                await AIProviderConfigStore.shared.delete(id: insertedConfigID)
+            }
+            SettingsManager.shared.selectedUnifiedLLMId = previousSelection
+            throw error
+        }
+    }
+
     // MARK: - Progress Tracking Tests
 
     @Test("Progress value is within valid range")
@@ -352,7 +392,7 @@ struct AIProcessingCoordinatorTests {
 
         // This test verifies the method can be called without crashing
         // The actual processing will fail due to invalid file/configuration
-        await coordinator.process(audioURL: testURL, meetingID: testMeetingID)
+        _ = try? await coordinator.process(audioURL: testURL, meetingID: testMeetingID)
 
         // After processing, should return to idle state
         #expect(!coordinator.isProcessing)
@@ -369,7 +409,7 @@ struct AIProcessingCoordinatorTests {
         coordinator.reset()
 
         // Start processing - this will fail but should transition stages
-        await coordinator.process(audioURL: testURL, meetingID: testMeetingID)
+        _ = try? await coordinator.process(audioURL: testURL, meetingID: testMeetingID)
 
         // Eventually should end in failed or completed state
         #expect(coordinator.currentStage != .idle)
@@ -382,7 +422,7 @@ struct AIProcessingCoordinatorTests {
 
         // Process with invalid URL should result in failed state
         let invalidURL = URL(fileURLWithPath: "/non/existent/path.m4a")
-        await coordinator.process(audioURL: invalidURL, meetingID: testMeetingID)
+        _ = try? await coordinator.process(audioURL: invalidURL, meetingID: testMeetingID)
 
         // Should have transitioned to failed
         if case .failed = coordinator.currentStage {
@@ -399,7 +439,7 @@ struct AIProcessingCoordinatorTests {
         let coordinator = AIProcessingCoordinator.shared
         let invalidURL = URL(fileURLWithPath: "/non/existent/path.m4a")
 
-        await coordinator.process(audioURL: invalidURL, meetingID: testMeetingID)
+        _ = try? await coordinator.process(audioURL: invalidURL, meetingID: testMeetingID)
 
         if case .failed(let message) = coordinator.currentStage {
             #expect(!message.isEmpty)
@@ -450,7 +490,7 @@ struct AIProcessingCoordinatorTests {
         let coordinator = AIProcessingCoordinator.shared
         let invalidURL = URL(string: "invalid://url")!
 
-        await coordinator.process(audioURL: invalidURL, meetingID: testMeetingID)
+        _ = try? await coordinator.process(audioURL: invalidURL, meetingID: testMeetingID)
 
         // Should handle gracefully and end in failed state
         if case .failed = coordinator.currentStage {
@@ -468,11 +508,11 @@ struct AIProcessingCoordinatorTests {
         let testURL = testAudioURL
 
         // Start two concurrent processes
-        async let process1: Void = coordinator.process(audioURL: testURL, meetingID: UUID())
-        async let process2: Void = coordinator.process(audioURL: testURL, meetingID: UUID())
+        async let process1 = try? coordinator.process(audioURL: testURL, meetingID: UUID())
+        async let process2 = try? coordinator.process(audioURL: testURL, meetingID: UUID())
 
-        await process1
-        await process2
+        _ = await process1
+        _ = await process2
 
         // Both should complete without crashing
         #expect(true)

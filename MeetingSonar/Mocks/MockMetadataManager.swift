@@ -6,6 +6,7 @@
 //
 
 import Foundation
+@testable import MeetingSonar
 
 /// Mock metadata manager for unit testing
 ///

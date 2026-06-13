@@ -90,7 +90,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockCoordinator.mockSummaryResult = sampleSummaryText
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         #expect(mockCoordinator.isProcessing == false, "Processing should complete")
@@ -193,7 +193,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockCoordinator.mockASRError = AIProcessingError.notImplemented("No ASR model configured")
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         #expect(mockCoordinator.isProcessing == false, "Processing should complete")
@@ -237,7 +237,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockCoordinator.noLLMFallbackAvailable = true
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         #expect(mockCoordinator.isProcessing == false, "Processing should complete")
@@ -280,7 +280,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockCoordinator.mockASRError = AIProcessingError.notImplemented("ASR processing failed")
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         #expect(mockCoordinator.lastError != nil, "Should have an error")
@@ -325,7 +325,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         }
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         #expect(progressStages.contains(0.0), "Should start at 0%")
@@ -376,7 +376,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         }
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         #expect(stageHistory.count >= 4, "Should have at least 4 stages")
@@ -487,7 +487,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockCoordinator.mockLLMModelName = "Test-LLM-Model"
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         let updatedMeeting = try #require(mockMetadata.get(id: testMeetingID))
@@ -570,7 +570,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockCoordinator.mockSummaryResult = sampleSummaryText
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         #expect(mockCoordinator.lastUsedLLMModelID == "custom-llm-model-id", "Should use selected LLM model")
@@ -608,7 +608,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockCoordinator.mockSummaryResult = sampleSummaryText
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert - Should still complete even with empty transcript
         #expect(mockCoordinator.isProcessing == false, "Processing should complete")
@@ -650,7 +650,7 @@ struct AIProcessingCoordinatorIntegrationTests {
         mockCoordinator.mockSummaryResult = sampleSummaryText
 
         // Act
-        await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
+        _ = try? await mockCoordinator.process(audioURL: testAudioURL, meetingID: testMeetingID)
 
         // Assert
         #expect(mockCoordinator.isProcessing == false, "Processing should complete")
@@ -838,7 +838,7 @@ class MockAIProcessingCoordinator: ObservableObject {
 
     // MARK: - Processing Methods
 
-    func process(audioURL: URL, meetingID: UUID) async {
+    func process(audioURL: URL, meetingID: UUID) async throws -> AIProcessingResult {
         isProcessing = true
         progress = 0
         lastError = nil
@@ -980,14 +980,24 @@ class MockAIProcessingCoordinator: ObservableObject {
             // Completed
             currentStage = .completed
             onStageChange?(.completed)
+            isProcessing = false
+
+            return AIProcessingResult(
+                transcriptText: mockTranscriptResult,
+                transcriptURL: audioURL.deletingPathExtension().appendingPathExtension("json"),
+                transcriptVersion: transcriptVersion,
+                summaryText: mockSummaryResult,
+                summaryURL: audioURL.deletingPathExtension().appendingPathExtension("md"),
+                summaryVersion: summaryVersion
+            )
         } catch {
             lastError = error
             currentStage = .failed(error.localizedDescription)
             onStageChange?(.failed(error.localizedDescription))
+            isProcessing = false
+            throw error
         }
-
-        isProcessing = false
-        }
+    }
 
     func processASROnly(audioURL: URL, meetingID: UUID) async -> (text: String?, transcriptURL: URL?) {
         let result = await processASROnlyWithVersion(audioURL: audioURL, meetingID: meetingID)

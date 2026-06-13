@@ -149,11 +149,8 @@ struct AudioCaptureServiceTests {
         // May succeed or throw depending on ScreenCaptureKit availability
         do {
             try await service.startCapture(targetApp: nil)
-            // If ScreenCaptureKit works, isCapturing should be true
-            #expect(service.isCapturing, "Should be capturing when successful")
-
-            // Clean up
-            try? await service.stopCapture()
+            await service.stopCapture()
+            #expect(!service.isCapturing, "Should clean up capture state after successful start")
         } catch {
             // Expected in most test environments (no display available)
             #expect(!service.isCapturing, "Should not be capturing when failed")

@@ -53,12 +53,16 @@ protocol RecordingServiceProtocol: AnyObject {
     ///   - appName: Optional application name for filename
     /// - Throws: `MeetingSonarError.recording(.alreadyRecording)` if already recording
     /// - Throws: `MeetingSonarError.recording(.permissionDenied)` if required permissions missing
-    func startRecording(trigger: RecordingTrigger, appName: String?) async throws
+    func startRecording(
+        trigger: RecordingTrigger,
+        appName: String?,
+        detectionInfo: MeetingDetectionInfo?
+    ) async throws
 
     /// Stops the current recording session
     ///
     /// - Important: Safe to call even if not recording
-    func stopRecording()
+    func stopRecording(reason: RecordingStopReason)
 
     /// Pauses the current recording
     ///
@@ -67,6 +71,16 @@ protocol RecordingServiceProtocol: AnyObject {
 
     /// Resumes a paused recording
     func resumeRecording()
+}
+
+extension RecordingServiceProtocol {
+    func startRecording(trigger: RecordingTrigger, appName: String?) async throws {
+        try await startRecording(trigger: trigger, appName: appName, detectionInfo: nil)
+    }
+
+    func stopRecording() {
+        stopRecording(reason: .manualStop)
+    }
 }
 
 /// Delegate protocol for recording service events

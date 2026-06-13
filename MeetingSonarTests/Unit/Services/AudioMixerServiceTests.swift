@@ -1003,6 +1003,27 @@ struct AudioMixerServiceTests {
         // Should complete without crashing
     }
 
+    @Test("Repeated concurrent lifecycle operations keep timer state balanced")
+    func testRepeatedConcurrentLifecycleOperationsKeepTimerStateBalanced() async throws {
+        for _ in 0..<100 {
+            let mixer = makeMixer()
+
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<3 {
+                    group.addTask { mixer.start() }
+                    group.addTask { mixer.pause() }
+                    group.addTask { mixer.resume() }
+                    group.addTask { mixer.stop() }
+                }
+            }
+
+            mixer.stop()
+
+            #expect(!mixer.isActive)
+            #expect(!mixer.isPaused)
+        }
+    }
+
     @Test("Mixer behavior when no audio sources are enabled")
     func testNoAudioSourcesEnabled() async throws {
         let mixer = makeMixer()

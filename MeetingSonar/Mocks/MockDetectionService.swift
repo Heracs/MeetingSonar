@@ -6,6 +6,7 @@
 //
 
 import Foundation
+@testable import MeetingSonar
 
 /// Mock detection service for unit testing
 ///

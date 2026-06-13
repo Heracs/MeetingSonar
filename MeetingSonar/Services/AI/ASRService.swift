@@ -1,10 +1,15 @@
 import Foundation
 
-/// ASR 服务 - 云端版本
+/// ASR 服务 - provider-aware 版本
 /// 负责管理语音识别流程
 @MainActor
 class ASRService: ObservableObject {
     static let shared = ASRService()
+
+    struct RuntimeCacheKey: Hashable, Sendable {
+        let configID: UUID
+        let revision: Int
+    }
 
     // MARK: - Published State
 
@@ -15,11 +20,13 @@ class ASRService: ObservableObject {
     // MARK: - Private Properties
 
     private var currentEngine: ASREngine?
+    private var currentRuntime: (key: RuntimeCacheKey, runtime: any ASRRuntime)?
+    private let runtimeFactory = AIProviderRuntimeFactory()
 
     // MARK: - Initialization
 
     private init() {
-        LoggerService.shared.log(category: .ai, message: "ASRService initialized (cloud-only mode)")
+        LoggerService.shared.log(category: .ai, message: "ASRService initialized (provider-aware mode)")
     }
 
     // MARK: - Transcription
@@ -42,9 +49,6 @@ class ASRService: ObservableObject {
         defer { isProcessing = false }
 
         do {
-            // 获取或创建引擎
-            let engine = try await getOrCreateEngine()
-
             // 准备 chunk 进度回调（跨 actor 边界需要 @Sendable）
             let sendableChunkProgress: (@Sendable (ASRChunkStage) -> Void)? = onChunkProgress.map { handler in
                 { @Sendable stage in
@@ -53,6 +57,29 @@ class ASRService: ObservableObject {
                     }
                 }
             }
+
+            if let runtime = try await getOrCreateRuntime() {
+                let transcriptResult = try await runtime.transcribe(
+                    audioURL: audioURL,
+                    context: ASRRuntimeContext(meetingID: meetingID, language: "zh"),
+                    progress: { [weak self] event in
+                        await self?.handleRuntimeProgress(event, chunkProgress: sendableChunkProgress)
+                    }
+                )
+
+                progress = 1.0
+
+                let result = makeTranscriptionResult(
+                    from: transcriptResult,
+                    meetingID: meetingID
+                )
+
+                LoggerService.shared.log(category: .ai, message: "Transcription completed for meeting: \(meetingID)")
+                return result
+            }
+
+            // 获取或创建引擎
+            let engine = try await getOrCreateEngine()
 
             // 执行转录（优先使用带 chunk 进度的方法）
             let transcriptResult: TranscriptionResult
@@ -80,19 +107,9 @@ class ASRService: ObservableObject {
             progress = 1.0
 
             // 转换为ASRTranscriptionResult
-            let segments: [TranscriptSegment] = transcriptResult.segments.map { segment in
-                TranscriptSegment(
-                    start: segment.startTime,
-                    end: segment.endTime,
-                    text: segment.text
-                )
-            }
-            let result = ASRTranscriptionResult(
-                meetingID: meetingID,
-                text: transcriptResult.text,
-                segments: segments,
-                language: transcriptResult.language ?? "zh",
-                processingTime: transcriptResult.processingTime
+            let result = makeTranscriptionResult(
+                from: transcriptResult,
+                meetingID: meetingID
             )
 
             LoggerService.shared.log(category: .ai, message: "Transcription completed for meeting: \(meetingID)")
@@ -106,6 +123,89 @@ class ASRService: ObservableObject {
     }
 
     // MARK: - Engine Management
+
+    private func makeTranscriptionResult(
+        from transcriptResult: TranscriptionResult,
+        meetingID: UUID
+    ) -> ASRTranscriptionResult {
+        let segments: [TranscriptSegment] = transcriptResult.segments.map { segment in
+            TranscriptSegment(
+                start: segment.startTime,
+                end: segment.endTime,
+                text: segment.text
+            )
+        }
+        return ASRTranscriptionResult(
+            meetingID: meetingID,
+            text: transcriptResult.text,
+            segments: segments,
+            language: transcriptResult.language ?? "zh",
+            processingTime: transcriptResult.processingTime
+        )
+    }
+
+    private func handleRuntimeProgress(
+        _ event: ASRProgressEvent,
+        chunkProgress: (@Sendable (ASRChunkStage) -> Void)?
+    ) async {
+        switch event {
+        case .preparingAudio:
+            chunkProgress?(.splitting)
+        case .chunk(let current, let total):
+            chunkProgress?(.chunk(current: current, total: total))
+        case .transcribing(let progress):
+            self.progress = progress
+        }
+    }
+
+    private func getOrCreateRuntime() async throws -> (any ASRRuntime)? {
+        guard let config = await resolveSelectedASRProviderConfig() else {
+            currentRuntime = nil
+            return nil
+        }
+
+        guard config.kind == .localCommand || config.asr?.transport == .localCommand else {
+            currentRuntime = nil
+            LoggerService.shared.log(category: .ai, level: .debug, message: """
+            [ASR Service] Provider runtime skipped for cloud ASR compatibility
+            ├─ Provider: \(config.providerKey)
+            ├─ Transport: \(config.asr?.transport.rawValue ?? "nil")
+            └─ Fallback: legacy cloud engine
+            """)
+            return nil
+        }
+
+        let key = RuntimeCacheKey(configID: config.id, revision: config.revision)
+        if let cached = currentRuntime, cached.key == key {
+            return cached.runtime
+        }
+
+        let runtime = try runtimeFactory.makeASRRuntime(config: config)
+        currentRuntime = (key, runtime)
+        if let engine = currentEngine {
+            await engine.unload()
+            currentEngine = nil
+        }
+
+        LoggerService.shared.log(category: .ai, message: """
+        [ASR Service] Using provider runtime
+        ├─ Provider: \(config.providerKey)
+        ├─ Config ID: \(config.id.uuidString)
+        └─ Revision: \(config.revision)
+        """)
+
+        return runtime
+    }
+
+    private func resolveSelectedASRProviderConfig() async -> AIProviderConfig? {
+        let selectedID = SettingsManager.shared.selectedUnifiedASRId
+        if let selected = await AIProviderConfigStore.shared.config(byId: selectedID),
+           selected.enabledCapabilities.contains(.asr) {
+            return selected
+        }
+
+        return await AIProviderConfigStore.shared.configs(for: .asr).first
+    }
 
     /// 获取或创建ASR引擎
     private func getOrCreateEngine() async throws -> ASREngine {
@@ -243,6 +343,10 @@ class ASRService: ObservableObject {
             await engine.unload()
             currentEngine = nil
             LoggerService.shared.log(category: .ai, message: "ASR engine shutdown")
+        }
+        if currentRuntime != nil {
+            currentRuntime = nil
+            LoggerService.shared.log(category: .ai, message: "ASR runtime shutdown")
         }
     }
 

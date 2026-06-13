@@ -8,6 +8,13 @@
 
 import Foundation
 
+struct MeetingDetectionInfo: Codable, Hashable, Sendable {
+    var triggerAppBundleID: String?
+    var triggerSource: String?
+    var participantCount: Int?
+    var participantCountConfidence: String?
+}
+
 /// Represents the metadata for a single meeting recording.
 /// Corresponds to F-6.0 (Metadata Index).
 struct MeetingMeta: Codable, Identifiable, Hashable, Sendable {
@@ -42,6 +49,9 @@ struct MeetingMeta: Codable, Identifiable, Hashable, Sendable {
     
     /// Versions of summaries
     var summaryVersions: [SummaryVersion] = []
+
+    /// Smart detection metadata, when the recording was started automatically.
+    var detectionInfo: MeetingDetectionInfo?
     
     // MARK: - Enums
     
@@ -57,7 +67,7 @@ struct MeetingMeta: Codable, Identifiable, Hashable, Sendable {
     
     enum CodingKeys: String, CodingKey {
         case id, filename, displayTitle, source, startTime, duration, status
-        case transcriptVersions, summaryVersions
+        case transcriptVersions, summaryVersions, detectionInfo
         // Removed legacy keys to avoid Encodable synthesis errors
     }
     
@@ -82,6 +92,7 @@ struct MeetingMeta: Codable, Identifiable, Hashable, Sendable {
         // Load new fields if present
         var _transcriptVersions = try container.decodeIfPresent([TranscriptVersion].self, forKey: .transcriptVersions) ?? []
         var _summaryVersions = try container.decodeIfPresent([SummaryVersion].self, forKey: .summaryVersions) ?? []
+        let _detectionInfo = try container.decodeIfPresent(MeetingDetectionInfo.self, forKey: .detectionInfo)
         
         // Legacy Migration
         // Try to decode using legacy keys
@@ -189,11 +200,21 @@ struct MeetingMeta: Codable, Identifiable, Hashable, Sendable {
         self.status = _status
         self.transcriptVersions = _transcriptVersions
         self.summaryVersions = _summaryVersions
+        self.detectionInfo = _detectionInfo
     }
     
     // MARK: - Default Init (for creating new records)
     
-    init(id: UUID = UUID(), filename: String, title: String? = nil, source: String, startTime: Date, duration: TimeInterval, status: ProcessingStatus = .pending) {
+    init(
+        id: UUID = UUID(),
+        filename: String,
+        title: String? = nil,
+        source: String,
+        startTime: Date,
+        duration: TimeInterval,
+        status: ProcessingStatus = .pending,
+        detectionInfo: MeetingDetectionInfo? = nil
+    ) {
         self.id = id
         self.filename = filename
         self.displayTitle = title
@@ -201,6 +222,7 @@ struct MeetingMeta: Codable, Identifiable, Hashable, Sendable {
         self.startTime = startTime
         self.duration = duration
         self.status = status
+        self.detectionInfo = detectionInfo
     }
     
     // MARK: - Computed Properties

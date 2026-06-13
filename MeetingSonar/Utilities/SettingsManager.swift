@@ -67,6 +67,7 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
     /// Cached cloud AI models (synchronous access for UI)
     @Published private(set) var cachedCloudASRModels: [CloudAIModelConfig] = []
     @Published private(set) var cachedCloudLLMModels: [CloudAIModelConfig] = []
+    @Published private(set) var cachedAIProviderConfigs: [AIProviderConfig] = []
 
     /// Subscribe to model manager changes to trigger UI updates
     private func setupModelObservers() {
@@ -76,6 +77,16 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
             .sink { [weak self] _ in
                 Task { @MainActor in
                     await self?.refreshCloudModels()
+                    await self?.refreshAIProviderConfigs()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AIProviderConfigStore.configsDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    await self?.refreshAIProviderConfigs()
                 }
             }
             .store(in: &cancellables)
@@ -83,6 +94,7 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         // Initial load
         Task { @MainActor in
             await refreshCloudModels()
+            await refreshAIProviderConfigs()
         }
 
         // Refresh local model cache on init
@@ -120,6 +132,32 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         [SettingsManager] Cloud models refreshed
         ├─ ASR Models: \(asrModels.count)
         └─ LLM Models: \(llmModels.count)
+        """)
+    }
+
+    @MainActor
+    func refreshAIProviderConfigs() async {
+        let storedConfigs = await AIProviderConfigStore.shared.allConfigs()
+        let cloudModels = await CloudAIModelManager.shared.models
+        let convertedCloudConfigs = cloudModels.compactMap { AIProviderConfigStore.convert($0) }
+
+        var mergedByID: [UUID: AIProviderConfig] = [:]
+        for config in convertedCloudConfigs {
+            mergedByID[config.id] = config
+        }
+        for config in storedConfigs {
+            mergedByID[config.id] = config
+        }
+
+        cachedAIProviderConfigs = mergedByID.values.sorted { left, right in
+            left.displayName.localizedStandardCompare(right.displayName) == .orderedAscending
+        }
+
+        objectWillChange.send()
+
+        LoggerService.shared.log(category: .ai, message: """
+        [SettingsManager] AI provider configs refreshed
+        └─ Provider Configs: \(cachedAIProviderConfigs.count)
         """)
     }
     
@@ -441,9 +479,7 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
     func isAppDetectionEnabled(bundleID: String) -> Bool {
         switch bundleID {
         case "us.zoom.xos": return detectZoom
-        case "com.microsoft.teams": return detectTeamsClassic
         case "com.microsoft.teams2": return detectTeamsNew
-        case "com.cisco.webex.webex": return detectWebex
         case "com.tencent.meeting": return detectTencentMeeting
         case "com.electron.lark.iron": return detectFeishu
         case "com.tencent.xinWeChat": return detectWeChat
@@ -456,27 +492,24 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
     /// Enable Zoom detection
     @AppStorage("detectZoom") var detectZoom: Bool = true
 
-    /// Enable Microsoft Teams (Classic) detection
-    @AppStorage("detectTeamsClassic") var detectTeamsClassic: Bool = true
+    /// Legacy Teams Classic preference retained only for old defaults compatibility.
+    @AppStorage("detectTeamsClassic") var detectTeamsClassic: Bool = false
 
-    /// Enable Microsoft Teams (New) detection
+    /// Enable Microsoft Teams New detection.
     @AppStorage("detectTeamsNew") var detectTeamsNew: Bool = true
 
-    /// Unified Teams detection (controls both Classic and New) - F-0.10.2
-    /// - Returns true if either is enabled (for migration compatibility)
-    /// - Sets both flags together for unified control
+    /// Unified Teams detection now controls Teams New only.
     var detectTeams: Bool {
         get {
-            return detectTeamsClassic || detectTeamsNew
+            detectTeamsNew
         }
         set {
-            detectTeamsClassic = newValue
             detectTeamsNew = newValue
         }
     }
 
-    /// Enable Webex detection
-    @AppStorage("detectWebex") var detectWebex: Bool = true
+    /// Legacy Webex preference retained only for old defaults compatibility.
+    @AppStorage("detectWebex") var detectWebex: Bool = false
 
     // MARK: Chinese Apps
 
@@ -794,8 +827,8 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
 
     // MARK: - Teams Detection Migration (F-0.10.2)
 
-    /// Migrate Teams detection settings to unified toggle
-    /// - If either Classic or New was enabled, enable both (unified behavior)
+    /// Migrate Teams detection settings to Teams New only.
+    /// - If old Classic or New was enabled, keep Teams support through Teams New.
     func migrateTeamsDetection() {
         // Check if already migrated
         guard !defaults.bool(forKey: Keys.hasMigratedTeamsDetection) else {
@@ -805,12 +838,12 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         let classicEnabled = defaults.bool(forKey: "detectTeamsClassic")
         let newEnabled = defaults.bool(forKey: "detectTeamsNew")
 
-        // If either was enabled, enable both (OR logic for migration)
-        // This ensures users who had only one version don't lose functionality
-        let unifiedEnabled = classicEnabled || newEnabled
+        // Preserve Teams support for old Classic-only users without re-enabling
+        // Classic as a current active detection target.
+        let teamsNewEnabled = classicEnabled || newEnabled
 
-        defaults.set(unifiedEnabled, forKey: "detectTeamsClassic")
-        defaults.set(unifiedEnabled, forKey: "detectTeamsNew")
+        defaults.set(false, forKey: "detectTeamsClassic")
+        defaults.set(teamsNewEnabled, forKey: "detectTeamsNew")
 
         // Mark as migrated
         defaults.set(true, forKey: Keys.hasMigratedTeamsDetection)
@@ -818,7 +851,7 @@ final class SettingsManager: ObservableObject, SettingsManagerProtocol {
         LoggerService.shared.log(
             category: .general,
             level: .info,
-            message: "[Settings] Migrated Teams detection: classic=\(classicEnabled), new=\(newEnabled) -> unified=\(unifiedEnabled)"
+            message: "[Settings] Migrated Teams detection: classic=\(classicEnabled), new=\(newEnabled) -> teamsNew=\(teamsNewEnabled)"
         )
     }
 
@@ -967,30 +1000,32 @@ extension SettingsManager {
 
     // MARK: - Unified Model Lists
 
+    func availableAIProviderConfigs(for capability: AIProviderCapability) async -> [AIProviderConfig] {
+        await AIProviderConfigStore.shared.configs(for: capability)
+    }
+
     var availableASRModels: [UnifiedModel] {
-        // Cloud-only: Return models from CloudAIModelManager
-        return cachedCloudASRModels
-            .filter { $0.isVerified && $0.supports(.asr) }
+        cachedAIProviderConfigs
+            .filter { $0.isVerified && $0.enabledCapabilities.contains(.asr) }
             .map { config in
                 UnifiedModel(
                     id: config.id.uuidString,
-                    name: config.asrConfig?.modelName ?? config.displayName,
-                    type: .online,
-                    provider: config.provider.displayName
+                    name: config.asr?.modelName ?? config.displayName,
+                    type: config.kind == .localCommand ? .local : .online,
+                    provider: providerDisplayName(for: config)
                 )
             }
     }
 
     var availableLLMModels: [UnifiedModel] {
-        // Cloud-only: Return models from CloudAIModelManager
-        return cachedCloudLLMModels
-            .filter { $0.isVerified && $0.supports(.llm) }
+        cachedAIProviderConfigs
+            .filter { $0.isVerified && $0.enabledCapabilities.contains(.llm) }
             .map { config in
                 UnifiedModel(
                     id: config.id.uuidString,
-                    name: config.llmConfig?.modelName ?? config.displayName,
-                    type: .online,
-                    provider: config.provider.displayName
+                    name: config.llm?.modelName ?? config.displayName,
+                    type: config.kind == .localCommand ? .local : .online,
+                    provider: providerDisplayName(for: config)
                 )
             }
     }
@@ -1009,5 +1044,11 @@ extension SettingsManager {
         let id = selectedUnifiedLLMId
         return availableLLMModels.first(where: { $0.id == id }) ?? availableLLMModels.first
     }
-}
 
+    private func providerDisplayName(for config: AIProviderConfig) -> String {
+        if config.providerKey == "local.whispercpp" {
+            return "Whisper.cpp"
+        }
+        return config.onlineServiceProvider?.displayName ?? config.providerKey
+    }
+}
